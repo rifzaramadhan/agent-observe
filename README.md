@@ -28,7 +28,7 @@ Jika ada paket yang belum terpasang, skrip mengecek akses HTTPS ke repositori ya
 
 ## Contoh penggunaan
 
-**Tentukan hostname Zabbix dan endpoint sendiri.** Ganti nama contoh dengan nilai di lingkungan Anda. Gunakan `--logs-only` jika hanya perlu mengirim log `journald`.
+**Tentukan hostname Zabbix dan endpoint sendiri.** Ganti nama contoh dengan nilai di lingkungan Anda. Gunakan `--logs-only` untuk mematikan metrik host. Log `journald` dan file aplikasi yang Anda pilih tetap dikirim.
 
 ```bash
 sudo bash install-agents-rocky10.sh \
@@ -58,6 +58,42 @@ Gunakan `--vector-tls` jika sertifikat aggregator sudah dipercaya oleh sistem. O
 | `--zabbix-port PORT`, `--vector-port PORT` | Ubah port tujuan active checks Zabbix atau port Vector native. |
 | `--passive` | Aktifkan juga passive checks TCP 10050 dari alamat `--zabbix-server`. Jika diperlukan, izinkan akses TCP 10050 dari server tersebut pada firewall. |
 | `--replace-config` | Izinkan penggantian konfigurasi dari deployment lain. Tinjau dulu konfigurasi yang ada. Skrip menyimpan salinan file yang diganti di `/var/backups/victoria-agents/`. |
+
+## Log aplikasi
+
+Secara default Vector membaca `journald`, termasuk keluaran aplikasi yang masuk ke journal systemd. Tambahkan opsi berikut untuk log yang ditulis langsung ke file.
+
+| Opsi | File yang dibaca |
+| --- | --- |
+| `--app-logs nginx` | `/var/log/nginx/access.log` dan `/var/log/nginx/error.log` |
+| `--app-logs apache` | `/var/log/httpd/access_log` dan `/var/log/httpd/error_log`. Alias `httpd` juga bisa dipakai. |
+| `--app-log 'nama=/path/absolut/*.log'` | Path file atau pola dengan `*` dan `?`. Ulangi opsi untuk menambah file atau aplikasi. Bungkus pola dengan tanda kutip agar shell meneruskannya ke Vector. |
+
+Contoh mengaktifkan preset dan log aplikasi sendiri pada host yang menyimpan file tersebut.
+
+```bash
+sudo bash install-agents-rocky10.sh \
+  --app-logs nginx \
+  --app-logs apache \
+  --app-log 'my_app=/var/log/my-app/*.log'
+```
+
+Gunakan path sesuai konfigurasi aplikasi. Jika Nginx atau Apache menulis ke path khusus, gunakan `--app-log` untuk menunjuk file tersebut. Nama aplikasi pada `--app-log` menggunakan huruf kecil, angka, atau garis bawah dan harus diawali huruf.
+
+Vector mengirim setiap baris dengan field `app_service` dan `file` ke aggregator. Saat pertama menemukan file, Vector membaca dari awal. Untuk file yang sudah memiliki checkpoint, Vector melanjutkan dari posisi terakhir. Pilih pola yang hanya mencakup file yang ingin dikirim dan hindari memasukkan file yang sama dengan nama aplikasi berbeda.
+
+### Akses file log
+
+Layanan Vector perlu akses baca ke file dan akses lintas direktori induknya. Untuk pola wildcard, berikan juga akses daftar isi pada direktori yang dicocokkan. Gunakan grup khusus yang sudah diberi akses ke log, atau ACL untuk user `vector`. Pastikan izin yang sama berlaku untuk file baru setelah rotasi.
+
+Jika menggunakan grup khusus, jalankan skrip dengan `--app-log-group` seperti contoh berikut. Ganti `app-logs` dengan grup yang sudah tersedia di server.
+
+```bash
+sudo bash install-agents-rocky10.sh --app-logs nginx --app-log-group app-logs
+sudo systemctl show vector -p SupplementaryGroups
+```
+
+Saat menjalankan ulang skrip, sertakan kembali semua opsi konfigurasi yang ingin dipakai, termasuk opsi TLS, endpoint, sumber log, dan grup jika sebelumnya digunakan. Untuk menguji, buat permintaan HTTP ke Nginx atau Apache lalu cari baris access log yang baru di Grafana dengan datasource VictoriaLogs. Gunakan field `app_service` jika aggregator meneruskan field tersebut ke VictoriaLogs.
 
 ## Verifikasi
 
