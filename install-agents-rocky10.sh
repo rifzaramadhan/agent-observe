@@ -19,7 +19,10 @@ Penggunaan:
   --vector-port PORT        Port Vector native (default: 6000)
   --vector-tls              Aktifkan TLS dan verifikasi sertifikat serta nama endpoint
   --vector-ca FILE          Gunakan CA PEM internal dan aktifkan TLS
-  --logs-only               Kirim journald saja. Default juga mengirim host metrics.
+  --logs-only               Kirim log journald dan log aplikasi yang dipilih, tanpa host metrics.
+  --app-logs nginx|apache   Tambahkan log access/error standar. Opsi dapat diulang.
+  --app-log NAMA=POLA        Tambahkan file log aplikasi dari path absolut (* dan ? didukung).
+  --app-log-group GRUP      Beri layanan Vector akses melalui grup Linux yang sudah ada. Opsi dapat diulang.
   --replace-config          Izinkan mengganti konfigurasi agen milik deployment lain
   -h, --help                Tampilkan opsi
 
@@ -46,6 +49,28 @@ psk_identity=
 psk_source=
 vector_tls=0
 ca_source=
+app_services=()
+app_log_paths=()
+app_log_groups=()
+app_name_pattern='^[a-z][a-z0-9_]{0,47}$'
+app_path_pattern='^/[A-Za-z0-9_./*?@-]+$'
+app_group_pattern='^[A-Za-z_][A-Za-z0-9_.-]*$'
+
+add_app_log() {
+    local name=$1 path=$2 index
+    [[ $name =~ $app_name_pattern && $path =~ $app_path_pattern && $path != */ ]] ||
+        die 'Gunakan --app-log nama=/path/absolut/*.log dengan nama huruf kecil, angka, atau garis bawah.'
+    for ((index=0; index<${#app_services[@]}; index++)); do
+        if [[ ${app_services[index]} == "$name" ]]; then
+            if ! grep -Fxq -- "$path" <<< "${app_log_paths[index]}"; then
+                app_log_paths[index]+=$'\n'"$path"
+            fi
+            return 0
+        fi
+    done
+    app_services+=("$name")
+    app_log_paths+=("$path")
+}
 
 while (($#)); do
     case "$1" in
@@ -54,7 +79,7 @@ while (($#)); do
         --logs-only) metrics=0; shift ;;
         --replace-config) replace=1; shift ;;
         --vector-tls) vector_tls=1; shift ;;
-        --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca)
+        --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
             (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
             case "$1" in
                 --hostname) agent_hostname=$2 ;;
@@ -66,6 +91,22 @@ while (($#)); do
                 --vector-aggregator) vector_aggregator=$2 ;;
                 --vector-port) vector_port=$2 ;;
                 --vector-ca) ca_source=$2; vector_tls=1 ;;
+                --app-logs)
+                    case "$2" in
+                        nginx)
+                            add_app_log nginx /var/log/nginx/access.log
+                            add_app_log nginx /var/log/nginx/error.log ;;
+                        apache|httpd)
+                            add_app_log apache /var/log/httpd/access_log
+                            add_app_log apache /var/log/httpd/error_log ;;
+                        *) die "Preset log tidak dikenal: $2. Pilih nginx atau apache." ;;
+                    esac ;;
+                --app-log)
+                    [[ $2 == *=* ]] || die 'Gunakan --app-log nama=/path/absolut/*.log.'
+                    add_app_log "${2%%=*}" "${2#*=}" ;;
+                --app-log-group)
+                    [[ $2 =~ $app_group_pattern ]] || die "Nama grup log tidak valid: $2."
+                    app_log_groups+=("$2") ;;
             esac
             shift 2 ;;
         *) die "Opsi tidak dikenal: $1. Lihat --help." ;;
@@ -101,6 +142,14 @@ if [[ -n $ca_source ]]; then
     [[ -f $ca_source && -r $ca_source ]] || die "File CA tidak dapat dibaca."
     openssl x509 -in "$ca_source" -noout || die "CA harus berformat PEM."
 fi
+
+vector_groups=systemd-journal
+for group in "${app_log_groups[@]}"; do
+    getent group "$group" >/dev/null || die "Grup log tidak ditemukan: $group."
+    if [[ " $vector_groups " != *" $group "* ]]; then
+        vector_groups+=" $group"
+    fi
+done
 
 exec 9>/run/lock/victoria-install-agents.lock
 flock -n 9 || die "Instalasi agen lain sedang berjalan."
@@ -283,20 +332,35 @@ sources:
     exclude_units:
       - vector.service
 YAML
-    inputs='[journald]'
+    inputs='journald'
     if ((metrics)); then
         cat <<'YAML'
   host_metrics:
     type: host_metrics
     scrape_interval_secs: 30
 YAML
-        inputs='[journald, host_metrics]'
+        inputs+=', host_metrics'
+    fi
+    for ((index=0; index<${#app_services[@]}; index++)); do
+        name=${app_services[index]}
+        printf '  app_file_%s:\n    type: file\n    read_from: beginning\n    include:\n' "$name"
+        while IFS= read -r path; do
+            printf '      - "%s"\n' "$path"
+        done <<< "${app_log_paths[index]}"
+    done
+    if ((${#app_services[@]})); then
+        printf 'transforms:\n'
+        for name in "${app_services[@]}"; do
+            printf '  app_tag_%s:\n    type: remap\n    inputs: [app_file_%s]\n    source: |\n      .app_service = "%s"\n' \
+                "$name" "$name" "$name"
+            inputs+=", app_tag_$name"
+        done
     fi
     cat <<YAML
 sinks:
   victoria_aggregator:
     type: vector
-    inputs: $inputs
+    inputs: [$inputs]
     address: "$vector_aggregator:$vector_port"
     buffer:
       type: disk
@@ -312,7 +376,7 @@ YAML
 cat > "$work_dir/vector.conf" <<SYSTEMD
 $marker
 [Service]
-SupplementaryGroups=systemd-journal
+SupplementaryGroups=$vector_groups
 ExecStartPre=
 ExecStartPre=/usr/bin/vector validate --skip-healthchecks $vector_config
 ExecStart=
