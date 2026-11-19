@@ -59,6 +59,37 @@ Gunakan `--vector-tls` jika sertifikat aggregator sudah dipercaya oleh sistem. O
 | `--passive` | Aktifkan juga passive checks TCP 10050 dari alamat `--zabbix-server`. Jika diperlukan, izinkan akses TCP 10050 dari server tersebut pada firewall. |
 | `--replace-config` | Izinkan penggantian konfigurasi dari deployment lain. Tinjau dulu konfigurasi yang ada. Skrip menyimpan salinan file yang diganti di `/var/backups/victoria-agents/`. |
 
+## Ubah konfigurasi setelah instalasi
+
+Setelah instalasi atau konfigurasi berhasil, skrip menyimpan pengaturan di `/etc/agent-observe.args`. File tersebut hanya dapat diakses root. Isinya mencatat opsi deployment dan path file PSK atau CA yang dikelola skrip.
+
+Gunakan `--configure-only` sebagai opsi pertama. Tentukan hanya perubahan yang diinginkan. Skrip memuat pengaturan sebelumnya, memvalidasi konfigurasi kedua agen, dan me-restart layanan yang konfigurasinya berubah. Mode ini memerlukan kedua paket sudah terpasang dan berjalan tanpa akses internet.
+
+**Ubah Zabbix Server dan nama host** sambil mempertahankan pengaturan Vector.
+
+```bash
+sudo bash install-agents-rocky10.sh --configure-only \
+  --zabbix-server zabbix.example.com \
+  --hostname rocky-app-02
+```
+
+**Tambahkan log Nginx** ke daftar log aplikasi yang sudah dikumpulkan.
+
+```bash
+sudo bash install-agents-rocky10.sh --configure-only --app-logs nginx
+```
+
+**Ganti daftar file log aplikasi** dengan log Apache saja. Log `journald` tetap dikumpulkan.
+
+```bash
+sudo bash install-agents-rocky10.sh --configure-only \
+  --clear-app-logs --app-logs apache
+```
+
+Opsi `--app-logs`, `--app-log`, dan `--app-log-group` menambah entri ke pengaturan sebelumnya. Gunakan `--clear-app-log-groups` untuk memulai daftar grup tambahan dari kosong. Gunakan `--active-only` untuk mematikan passive checks, `--host-metrics` untuk mengaktifkan kembali metrik host, dan `--zabbix-no-psk` atau `--vector-no-tls` jika koneksi terkait memang akan dikembalikan ke plaintext.
+
+Untuk deployment dari versi lama, jalankan versi skrip terbaru sekali dengan **seluruh opsi deployment yang berlaku**, termasuk endpoint, TLS, sumber log, dan grup yang digunakan. Langkah ini membuat pengaturan awal untuk `--configure-only`. Menjalankan mode instalasi biasa setelah itu tetap menggunakan default dan opsi dari perintah tersebut sebagai konfigurasi lengkap.
+
 ## Log aplikasi
 
 Secara default Vector membaca `journald`, termasuk keluaran aplikasi yang masuk ke journal systemd. Tambahkan opsi berikut untuk log yang ditulis langsung ke file.
@@ -93,7 +124,7 @@ sudo bash install-agents-rocky10.sh --app-logs nginx --app-log-group app-logs
 sudo systemctl show vector -p SupplementaryGroups
 ```
 
-Saat menjalankan ulang skrip, sertakan kembali semua opsi konfigurasi yang ingin dipakai, termasuk opsi TLS, endpoint, sumber log, dan grup jika sebelumnya digunakan. Untuk menguji, buat permintaan HTTP ke Nginx atau Apache lalu cari baris access log yang baru di Grafana dengan datasource VictoriaLogs. Gunakan field `app_service` jika aggregator meneruskan field tersebut ke VictoriaLogs.
+Untuk menguji, buat permintaan HTTP ke Nginx atau Apache lalu cari baris access log yang baru di Grafana dengan datasource VictoriaLogs. Gunakan field `app_service` jika aggregator meneruskan field tersebut ke VictoriaLogs.
 
 ## Verifikasi
 
