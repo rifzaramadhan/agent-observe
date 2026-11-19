@@ -10,6 +10,7 @@ Penggunaan:
   bash install-agents-proxmox.sh --configure-only [opsi perubahan]
   bash install-agents-proxmox.sh --install-plugins --zabbix-plugin NAMA
 
+  --interactive             Buka panduan langkah demi langkah. Default jika tanpa argumen.
   --hostname NAMA           Nama Host di Zabbix (default: hostname OS)
   --zabbix-server HOST      IPv4 atau DNS Zabbix Server/Proxy (default: 10.7.146.72)
   --zabbix-port PORT        Port active checks (default: 10051)
@@ -52,11 +53,20 @@ info() { printf '%s\n' "$*"; }
 
 configure_only=0
 install_plugins_only=0
+interactive=0
+installer_platform=proxmox
+if (($# == 0)); then interactive=1; fi
 case "${1:-}" in
+    --interactive)
+        interactive=1; shift
+        (($# == 0)) || die 'Gunakan --interactive tanpa opsi tambahan.' ;;
     --configure-only) configure_only=1; shift ;;
     --install-plugins) install_plugins_only=1; shift ;;
 esac
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+if ((interactive)); then
+    [[ -t 0 && -t 1 ]] || die 'Mode interaktif memerlukan terminal. Gunakan opsi CLI eksplisit untuk otomasi.'
+fi
 
 ((EUID == 0)) || die "Jalankan skrip sebagai root pada node Proxmox VE."
 source /etc/os-release
@@ -85,7 +95,7 @@ if [[ -e $state_file || -L $state_file ]]; then
 elif ((configure_only || install_plugins_only)); then
     die "Pengaturan belum tersimpan. Jalankan versi skrip ini sekali dengan semua opsi deployment yang berlaku."
 fi
-if ((configure_only || install_plugins_only)); then
+if ((configure_only || install_plugins_only || interactive)) && [[ -f $state_file ]]; then
     set -- "${saved_args[@]:1}" "$@"
 fi
 
@@ -126,59 +136,210 @@ add_app_log() {
     app_log_paths+=("$path")
 }
 
-while (($#)); do
-    case "$1" in
-        -h|--help) usage; exit 0 ;;
-        --passive) passive=1; shift ;;
-        --clear-zabbix-plugins) zabbix_plugins=(); shift ;;
-        --pve-access-logs) add_app_log pve_access /var/log/pveproxy/access.log; shift ;;
-        --pve-task-logs) add_app_log pve_task '/var/log/pve/tasks/*/UPID:*:'; shift ;;
-        --logs-only) metrics=0; shift ;;
-        --replace-config) replace=1; shift ;;
-        --vector-tls) vector_tls=1; shift ;;
-        --active-only) passive=0; shift ;;
-        --zabbix-no-psk) psk_identity=; psk_source=; shift ;;
-        --vector-no-tls) vector_tls=0; ca_source=; shift ;;
-        --host-metrics) metrics=1; shift ;;
-        --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
-        --clear-app-log-groups) app_log_groups=(); shift ;;
-        --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
-            (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
-            case "$1" in
-                --hostname) agent_hostname=$2 ;;
-                --zabbix-server) zabbix_server=$2 ;;
-                --zabbix-port) zabbix_port=$2 ;;
-                --zabbix-series) zabbix_series=$2 ;;
-                --zabbix-plugin)
-                    [[ $2 =~ ^[a-z][a-z0-9-]{0,39}$ ]] ||
-                        die "Nama plugin Zabbix tidak valid: $2."
-                    if [[ " ${zabbix_plugins[*]} " != *" $2 "* ]]; then zabbix_plugins+=("$2"); fi ;;
-                --psk-identity) psk_identity=$2 ;;
-                --psk-file) psk_source=$2 ;;
-                --vector-aggregator) vector_aggregator=$2 ;;
-                --vector-port) vector_port=$2 ;;
-                --vector-ca) ca_source=$2; vector_tls=1 ;;
-                --app-logs)
-                    case "$2" in
-                        nginx)
-                            add_app_log nginx /var/log/nginx/access.log
-                            add_app_log nginx /var/log/nginx/error.log ;;
-                        apache|httpd)
-                            add_app_log apache /var/log/apache2/access.log
-                            add_app_log apache /var/log/apache2/error.log ;;
-                        *) die "Preset log tidak dikenal: $2. Pilih nginx atau apache." ;;
-                    esac ;;
-                --app-log)
-                    [[ $2 == *=* ]] || die 'Gunakan --app-log nama=/path/absolut/*.log.'
-                    add_app_log "${2%%=*}" "${2#*=}" ;;
-                --app-log-group)
-                    [[ $2 =~ $app_group_pattern ]] || die "Nama grup log tidak valid: $2."
-                    app_log_groups+=("$2") ;;
-            esac
-            shift 2 ;;
-        *) die "Opsi tidak dikenal: $1. Lihat --help." ;;
+parse_args() {
+    while (($#)); do
+        case "$1" in
+            -h|--help) usage; exit 0 ;;
+            --passive) passive=1; shift ;;
+            --clear-zabbix-plugins) zabbix_plugins=(); shift ;;
+            --pve-access-logs) add_app_log pve_access /var/log/pveproxy/access.log; shift ;;
+            --pve-task-logs) add_app_log pve_task '/var/log/pve/tasks/*/UPID:*:'; shift ;;
+            --logs-only) metrics=0; shift ;;
+            --replace-config) replace=1; shift ;;
+            --vector-tls) vector_tls=1; shift ;;
+            --active-only) passive=0; shift ;;
+            --zabbix-no-psk) psk_identity=; psk_source=; shift ;;
+            --vector-no-tls) vector_tls=0; ca_source=; shift ;;
+            --host-metrics) metrics=1; shift ;;
+            --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
+            --clear-app-log-groups) app_log_groups=(); shift ;;
+            --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
+                (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
+                case "$1" in
+                    --hostname) agent_hostname=$2 ;;
+                    --zabbix-server) zabbix_server=$2 ;;
+                    --zabbix-port) zabbix_port=$2 ;;
+                    --zabbix-series) zabbix_series=$2 ;;
+                    --zabbix-plugin)
+                        [[ $2 =~ ^[a-z][a-z0-9-]{0,39}$ ]] ||
+                            die "Nama plugin Zabbix tidak valid: $2."
+                        if [[ " ${zabbix_plugins[*]} " != *" $2 "* ]]; then zabbix_plugins+=("$2"); fi ;;
+                    --psk-identity) psk_identity=$2 ;;
+                    --psk-file) psk_source=$2 ;;
+                    --vector-aggregator) vector_aggregator=$2 ;;
+                    --vector-port) vector_port=$2 ;;
+                    --vector-ca) ca_source=$2; vector_tls=1 ;;
+                    --app-logs)
+                        case "$2" in
+                            nginx)
+                                add_app_log nginx /var/log/nginx/access.log
+                                add_app_log nginx /var/log/nginx/error.log ;;
+                            apache|httpd)
+                                add_app_log apache /var/log/apache2/access.log
+                                add_app_log apache /var/log/apache2/error.log ;;
+                            *) die "Preset log tidak dikenal: $2. Pilih nginx atau apache." ;;
+                        esac ;;
+                    --app-log)
+                        [[ $2 == *=* ]] || die 'Gunakan --app-log nama=/path/absolut/*.log.'
+                        add_app_log "${2%%=*}" "${2#*=}" ;;
+                    --app-log-group)
+                        [[ $2 =~ $app_group_pattern ]] || die "Nama grup log tidak valid: $2."
+                        app_log_groups+=("$2") ;;
+                esac
+                shift 2 ;;
+            *) die "Opsi tidak dikenal: $1. Lihat --help." ;;
+        esac
+    done
+}
+
+wizard_read() {
+    printf '%s' "$1"
+    IFS= read -r wizard_reply || die "Input berakhir. Konfigurasi belum diterapkan."
+}
+
+wizard_choice() {
+    local prompt=$1 pattern=$2
+    while :; do
+        wizard_read "$prompt"
+        [[ $wizard_reply =~ $pattern ]] && return 0
+        info "Pilihan tidak valid. Coba lagi."
+    done
+}
+
+wizard_value() {
+    local label=$1 current=$2 flag=$3
+    wizard_read "$label [$current, Enter untuk lewati]: "
+    if [[ -n $wizard_reply ]]; then wizard_args+=("$flag" "$wizard_reply"); fi
+}
+
+wizard_toggle() {
+    local label=$1 current=$2 enable=$3 disable=$4
+    wizard_choice "$label [$current]: [y] aktifkan, [n] nonaktifkan, [Enter] lewati: " '^(y|n|s|skip)?$'
+    case "$wizard_reply" in
+        y) wizard_args+=("$enable") ;;
+        n) wizard_args+=("$disable") ;;
     esac
-done
+}
+
+wizard_step() {
+    printf '\n%s\n' "$1"
+    wizard_choice '[u] ubah, [s] skip, [Enter] skip: ' '^(u|s|skip)?$'
+    [[ $wizard_reply == u ]]
+}
+
+wizard_collect() {
+    local preset presets plugin
+    local -a choices
+    wizard_args=()
+    info "Agent Observe | Panduan instalasi dan konfigurasi"
+    info "Lewati langkah opsional untuk memakai nilai tersimpan atau default."
+    info "Skrip menerapkan perubahan hanya setelah Anda mengonfirmasi ringkasan."
+
+    if wizard_step '1/6 Zabbix Agent 2'; then
+        wizard_value 'Zabbix Server atau Proxy' "$zabbix_server" --zabbix-server
+        wizard_value 'Port active checks' "$zabbix_port" --zabbix-port
+        wizard_value 'Nama host Zabbix' "${agent_hostname:-$(hostname)}" --hostname
+        wizard_value 'Seri Agent 2 (8.0 atau 7.0)' "$zabbix_series" --zabbix-series
+        wizard_toggle 'Passive checks' "$([[ $passive == 1 ]] && printf aktif || printf nonaktif)" --passive --active-only
+    fi
+
+    if wizard_step '2/6 Vector Agent dan metrik host'; then
+        wizard_value 'Alamat Vector Aggregator' "$vector_aggregator" --vector-aggregator
+        wizard_value 'Port Vector native' "$vector_port" --vector-port
+        wizard_toggle 'Metrik host' "$([[ $metrics == 1 ]] && printf aktif || printf nonaktif)" --host-metrics --logs-only
+    fi
+
+    if wizard_step '3/6 File log aplikasi'; then
+        wizard_choice 'File log: [t] tambah, [g] ganti, [h] hapus dari koleksi, [Enter] lewati: ' '^(t|g|h|s|skip)?$'
+        case "$wizard_reply" in
+            g|h) wizard_args+=(--clear-app-logs) ;;
+        esac
+        if [[ $wizard_reply == t || $wizard_reply == g ]]; then
+            presets='nginx apache'
+            if [[ $installer_platform == proxmox ]]; then presets+=' pve-access pve-task'; fi
+            wizard_read "Preset ($presets), pisahkan dengan spasi, atau Enter: "
+            choices=()
+            IFS=' ' read -r -a choices <<< "$wizard_reply"
+            for preset in "${choices[@]}"; do
+                case "$preset" in
+                    pve-access|pve-task)
+                        [[ $installer_platform == proxmox ]] || die "Preset $preset tersedia pada installer Proxmox."
+                        wizard_args+=("--$preset-logs") ;;
+                    *) wizard_args+=(--app-logs "$preset") ;;
+                esac
+            done
+            while :; do
+                wizard_read 'Log khusus nama=/path/absolut/*.log (Enter jika selesai): '
+                [[ -n $wizard_reply ]] || break
+                wizard_args+=(--app-log "$wizard_reply")
+            done
+        fi
+        wizard_choice 'Grup akses log: [t] tambah, [g] ganti, [h] kosongkan, [Enter] lewati: ' '^(t|g|h|s|skip)?$'
+        case "$wizard_reply" in
+            g|h) wizard_args+=(--clear-app-log-groups) ;;
+        esac
+        if [[ $wizard_reply == t || $wizard_reply == g ]]; then
+            wizard_read 'Grup yang sudah ada (pisahkan dengan spasi, Enter jika selesai): '
+            choices=()
+            IFS=' ' read -r -a choices <<< "$wizard_reply"
+            for preset in "${choices[@]}"; do wizard_args+=(--app-log-group "$preset"); done
+        fi
+    fi
+
+    if wizard_step '4/6 Plugin Zabbix Agent 2'; then
+        wizard_choice 'Plugin: [t] tambah, [g] ganti, [h] berhenti memuat, [Enter] lewati: ' '^(t|g|h|s|skip)?$'
+        case "$wizard_reply" in
+            g|h) wizard_args+=(--clear-zabbix-plugins) ;;
+        esac
+        if [[ $wizard_reply == t || $wizard_reply == g ]]; then
+            wizard_read 'Nama plugin, mis. postgresql mongodb mssql (pisahkan dengan spasi): '
+            choices=()
+            IFS=' ' read -r -a choices <<< "$wizard_reply"
+            for plugin in "${choices[@]}"; do wizard_args+=(--zabbix-plugin "$plugin"); done
+        fi
+    fi
+
+    if wizard_step '5/6 TLS'; then
+        wizard_choice 'Zabbix: [p] setel PSK, [n] nonaktifkan PSK, [Enter] lewati: ' '^(p|n|s|skip)?$'
+        case "$wizard_reply" in
+            p)
+                wizard_value 'Identitas PSK' "${psk_identity:-belum diatur}" --psk-identity
+                wizard_value 'Path file PSK' "${psk_source:-belum diatur}" --psk-file ;;
+            n) wizard_args+=(--zabbix-no-psk) ;;
+        esac
+        wizard_choice 'Vector: [t] TLS dengan CA sistem, [c] TLS dengan file CA, [n] nonaktifkan TLS, [Enter] lewati: ' '^(t|c|n|s|skip)?$'
+        case "$wizard_reply" in
+            t) wizard_args+=(--vector-no-tls --vector-tls) ;;
+            c) wizard_value 'Path file CA' "${ca_source:-belum diatur}" --vector-ca ;;
+            n) wizard_args+=(--vector-no-tls) ;;
+        esac
+    fi
+
+    if wizard_step '6/6 Konfigurasi milik deployment lain'; then
+        wizard_choice 'Izinkan penggantian konfigurasi yang tidak dikelola skrip? [y/N]: ' '^(y|n|s|skip)?$'
+        if [[ $wizard_reply == y ]]; then wizard_args+=(--replace-config); fi
+    fi
+    parse_args "${wizard_args[@]}"
+}
+
+wizard_confirm() {
+    printf '\nRingkasan konfigurasi\n'
+    printf '  Zabbix: %s:%s | host %s | seri %s\n' "$zabbix_server" "$zabbix_port" "$agent_hostname" "$zabbix_series"
+    printf '  Passive checks: %s | TLS PSK: %s\n' "$([[ $passive == 1 ]] && printf aktif || printf nonaktif)" "$([[ -n $psk_source ]] && printf aktif || printf nonaktif)"
+    printf '  Vector: %s:%s | TLS: %s | metrik host: %s\n' "$vector_aggregator" "$vector_port" "$([[ $vector_tls == 1 ]] && printf aktif || printf nonaktif)" "$([[ $metrics == 1 ]] && printf aktif || printf nonaktif)"
+    printf '  File log aplikasi: %s\n' "${app_services[*]:-tidak ada}"
+    printf '  Grup log tambahan: %s\n' "${app_log_groups[*]:-tidak ada}"
+    printf '  Plugin Zabbix: %s\n' "${zabbix_plugins[*]:-tidak ada}"
+    if ((replace)); then info "  Penggantian konfigurasi deployment lain diizinkan."; fi
+    wizard_choice 'Instal paket yang diperlukan dan terapkan konfigurasi? [y/N]: ' '^(y|n|s|skip)?$'
+    if [[ $wizard_reply != y ]]; then
+        info "Dibatalkan. Konfigurasi belum diterapkan."
+        exit 0
+    fi
+}
+
+parse_args "$@"
+if ((interactive)); then wizard_collect; fi
 
 if ((install_plugins_only && ${#zabbix_plugins[@]} == 0)); then
     die 'Tentukan minimal satu --zabbix-plugin untuk mode --install-plugins.'
@@ -215,6 +376,8 @@ for group in "${app_log_groups[@]}"; do
         vector_groups+=" $group"
     fi
 done
+
+if ((interactive)); then wizard_confirm; fi
 
 zbx_config=/etc/zabbix/zabbix_agent2.conf
 vector_config=/etc/vector/vector.yaml

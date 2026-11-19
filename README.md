@@ -10,150 +10,57 @@ Untuk node **Proxmox VE**, gunakan [installer Proxmox VE](./install-agents-proxm
 - Untuk instalasi paket, server memerlukan `curl` dan akses HTTPS ke repositori paket. Jika kedua paket sudah terpasang, skrip melewati pengecekan internet dan langsung melanjutkan konfigurasi.
 - Pastikan Zabbix Server atau Proxy menerima **active checks** dan Vector Aggregator memiliki listener **Vector native** yang bisa dijangkau dari server agen.
 
-## Instalasi
+## Instalasi dan konfigurasi interaktif
 
-Jalankan perintah berikut di server yang akan dipantau. Alternatifnya, unduh file [install-agents-rocky10.sh](./install-agents-rocky10.sh) dari repositori dan jalankan dari direktori unduhan.
+Jalankan di server Rocky Linux yang akan dipantau. Jika Anda sudah mengunduh skrip, buka direktori unduhan lalu jalankan perintah `sudo bash` di bawah.
 
 ```bash
 git clone https://github.com/rifzaramadhan/agent-observe.git
 cd agent-observe
-bash install-agents-rocky10.sh --help
 sudo bash install-agents-rocky10.sh
 ```
 
-Jika ada paket yang belum terpasang, skrip mengecek akses HTTPS ke repositori yang diperlukan sebelum mengunduh atau memasang paket. Jika pengecekan gagal, skrip menampilkan endpoint yang bermasalah dan menghentikan instalasi.
+Di setiap langkah, pilih **`u`** untuk mengubah, atau tekan **Enter** maupun **`s`** untuk melewati. Langkah yang dilewati memakai pengaturan tersimpan atau default. Saat memasukkan nilai, tekan Enter untuk memakai nilai yang ditampilkan.
+
+| Langkah | Pengaturan |
+| --- | --- |
+| 1. Zabbix Agent 2 | Server atau Proxy, port active checks, nama host, seri paket 8.0 atau 7.0, dan passive checks |
+| 2. Vector Agent | Aggregator, port Vector native, dan pengiriman metrik host |
+| 3. File log aplikasi | Preset Nginx atau Apache, path khusus, dan grup akses |
+| 4. Plugin Zabbix Agent 2 | Tambah, ganti, atau berhenti memuat plugin |
+| 5. TLS | Identitas dan file PSK Zabbix, serta TLS Vector dengan CA sistem atau file CA |
+| 6. Konfigurasi milik deployment lain | Izin mengganti konfigurasi yang dikelola di luar skrip |
+
+Tinjau ringkasan lalu ketik **`y`** untuk menerapkan. Tekan Enter pada ringkasan untuk membatalkan. Skrip mengecek HTTPS ke repositori jika ada paket yang perlu dipasang. Bila semua paket sudah tersedia, konfigurasi dapat diterapkan tanpa internet.
 
 | Komponen | Pengaturan default |
 | --- | --- |
 | Zabbix Agent 2 | Seri `8.0`, active checks ke `10.7.146.72:10051`, menggunakan hostname OS |
-| Vector Agent | Log `journald` dan metrik host dikirim ke `10.7.146.73:6000` dengan protokol Vector native dan buffer disk 512 MiB |
+| Vector Agent | Journal dan metrik host ke `10.7.146.73:6000` dengan protokol Vector native dan buffer disk 512 MiB |
 
-## Contoh penggunaan
-
-**Tentukan hostname Zabbix dan endpoint sendiri.** Ganti nama contoh dengan nilai di lingkungan Anda. Gunakan `--logs-only` untuk mematikan metrik host. Log `journald` dan file aplikasi yang Anda pilih tetap dikirim.
-
-```bash
-sudo bash install-agents-rocky10.sh \
-  --hostname rocky-app-01 \
-  --zabbix-server zabbix.example.com \
-  --vector-aggregator vector.example.com \
-  --logs-only
-```
-
-**Aktifkan TLS pada kedua koneksi.** Koneksi default menggunakan plaintext. Untuk Zabbix, siapkan file berisi satu baris kunci PSK heksadesimal dan konfigurasikan identitas serta kunci yang sama pada host di Zabbix. Untuk Vector, aktifkan TLS pada aggregator dan gunakan nama DNS yang sesuai dengan sertifikatnya.
-
-```bash
-sudo bash install-agents-rocky10.sh \
-  --hostname rocky-app-01 \
-  --zabbix-server zabbix.example.com \
-  --psk-identity rocky-app-01 \
-  --psk-file /root/rocky-app-01.psk \
-  --vector-aggregator vector.example.com \
-  --vector-ca /root/vector-ca.pem
-```
-
-Gunakan `--vector-tls` jika sertifikat aggregator sudah dipercaya oleh sistem. Opsi `--vector-ca` mengaktifkan TLS dan menggunakan CA internal dari file PEM.
-
-| Opsi lain | Kegunaan |
-| --- | --- |
-| `--zabbix-series 7.0` | Pilih paket Zabbix Agent 2 seri 7.0. Untuk agen yang sudah terpasang, pilih seri yang sesuai dengan versi terpasang. |
-| `--zabbix-port PORT`, `--vector-port PORT` | Ubah port tujuan active checks Zabbix atau port Vector native. |
-| `--passive` | Aktifkan juga passive checks TCP 10050 dari alamat `--zabbix-server`. Jika diperlukan, izinkan akses TCP 10050 dari server tersebut pada firewall. |
-| `--replace-config` | Izinkan penggantian konfigurasi dari deployment lain. Tinjau dulu konfigurasi yang ada. Skrip menyimpan salinan file yang diganti di `/var/backups/victoria-agents/`. |
+Koneksi default menggunakan plaintext. Untuk TLS, atur identitas dan kunci PSK yang sama di Zabbix, serta siapkan sertifikat di Vector Aggregator. Gunakan nama aggregator yang sesuai dengan sertifikat.
 
 ## Ubah konfigurasi setelah instalasi
 
-Setelah instalasi atau konfigurasi berhasil, skrip menyimpan pengaturan di `/etc/agent-observe.args`. File tersebut hanya dapat diakses root. Isinya mencatat opsi deployment dan path file PSK atau CA yang dikelola skrip.
+Jalankan kembali skrip dengan cara yang sama. Pengaturan dari deployment sebelumnya dimuat dari `/etc/agent-observe.args`. Ubah langkah yang diperlukan lalu lewati langkah lainnya. Jika instalasi lama belum memiliki pengaturan tersimpan, isi pengaturan deployment yang berlaku saat pertama kali menjalankan panduan.
 
-Gunakan `--configure-only` sebagai opsi pertama. Tentukan hanya perubahan yang diinginkan. Skrip memuat pengaturan sebelumnya, memvalidasi konfigurasi kedua agen, dan me-restart layanan yang konfigurasinya berubah. Mode ini memerlukan kedua paket sudah terpasang dan berjalan tanpa akses internet.
-
-**Ubah Zabbix Server dan nama host** sambil mempertahankan pengaturan Vector.
-
-```bash
-sudo bash install-agents-rocky10.sh --configure-only \
-  --zabbix-server zabbix.example.com \
-  --hostname rocky-app-02
-```
-
-**Tambahkan log Nginx** ke daftar log aplikasi yang sudah dikumpulkan.
-
-```bash
-sudo bash install-agents-rocky10.sh --configure-only --app-logs nginx
-```
-
-**Ganti daftar file log aplikasi** dengan log Apache saja. Log `journald` tetap dikumpulkan.
-
-```bash
-sudo bash install-agents-rocky10.sh --configure-only \
-  --clear-app-logs --app-logs apache
-```
-
-Opsi `--app-logs`, `--app-log`, dan `--app-log-group` menambah entri ke pengaturan sebelumnya. Gunakan `--clear-app-log-groups` untuk memulai daftar grup tambahan dari kosong. Gunakan `--active-only` untuk mematikan passive checks, `--host-metrics` untuk mengaktifkan kembali metrik host, dan `--zabbix-no-psk` atau `--vector-no-tls` jika koneksi terkait memang akan dikembalikan ke plaintext.
-
-Untuk deployment dari versi lama, jalankan versi skrip terbaru sekali dengan **seluruh opsi deployment yang berlaku**, termasuk endpoint, TLS, sumber log, dan grup yang digunakan. Langkah ini membuat pengaturan awal untuk `--configure-only`. Menjalankan mode instalasi biasa setelah itu tetap menggunakan default dan opsi dari perintah tersebut sebagai konfigurasi lengkap.
+Untuk integrasi otomasi, opsi CLI masih tersedia melalui `bash install-agents-rocky10.sh --help`.
 
 ## Plugin Zabbix Agent 2
 
-Tambahkan `--zabbix-plugin NAMA` saat instalasi awal. Opsi dapat diulang untuk memasang beberapa plugin, misalnya `postgresql`, `mongodb`, atau `mssql`. Paket harus tersedia untuk seri Zabbix dan platform yang digunakan.
-
-```bash
-sudo bash install-agents-rocky10.sh \
-  --zabbix-plugin postgresql \
-  --zabbix-plugin mongodb
-```
-
-Untuk host yang sudah dikelola skrip, gunakan `--install-plugins` sebagai opsi pertama. Skrip menggunakan pengaturan tersimpan dan hanya mengunduh paket plugin yang belum tersedia.
-
-```bash
-sudo bash install-agents-rocky10.sh --install-plugins --zabbix-plugin mssql
-```
-
-Skrip menambahkan `Include` untuk file konfigurasi dari paket yang dipilih dan memvalidasi Agent 2 sebelum menerapkan perubahan layanan. Untuk memuat paket plugin yang sudah terpasang tanpa internet, gunakan `--configure-only --zabbix-plugin NAMA`. Dengan `--configure-only --clear-zabbix-plugins`, Agent 2 berhenti memuat plugin yang dipilih sebelumnya dan paketnya tetap terpasang. Tambahkan opsi `--zabbix-plugin` setelah opsi tersebut jika ingin mengganti daftar pilihan.
-
-Sesuaikan template Zabbix, macro, dan akses database untuk plugin yang digunakan. Periksa status Agent 2 dan log journal setelah instalasi.
-
-```bash
-sudo systemctl is-active zabbix-agent2
-sudo journalctl -u zabbix-agent2 -n 50 --no-pager
-```
-
-[Daftar dan persyaratan plugin resmi Zabbix](https://www.zabbix.com/documentation/current/en/manual/concepts/agent2/loadable_plugins)
+Pada langkah 4, pilih **tambah** lalu masukkan nama seperti `postgresql mongodb`. Paket harus tersedia untuk seri dan platform yang digunakan. Skrip menambahkan file konfigurasi paket ke `Include`. Pilihan **berhenti memuat** mengeluarkan plugin dari konfigurasi Agent 2 dan paketnya tetap terpasang. Sesuaikan template Zabbix, macro, dan akses database untuk plugin yang dipilih. [Daftar plugin Zabbix](https://www.zabbix.com/documentation/current/en/manual/concepts/agent2/loadable_plugins)
 
 ## Log aplikasi
 
-Secara default Vector membaca `journald`, termasuk keluaran aplikasi yang masuk ke journal systemd. Tambahkan opsi berikut untuk log yang ditulis langsung ke file.
+Vector membaca journal secara default. Pilih preset di langkah 3 untuk file log yang ditulis aplikasi secara langsung.
 
-| Opsi | File yang dibaca |
+| Preset | File |
 | --- | --- |
-| `--app-logs nginx` | `/var/log/nginx/access.log` dan `/var/log/nginx/error.log` |
-| `--app-logs apache` | `/var/log/httpd/access_log` dan `/var/log/httpd/error_log`. Alias `httpd` juga bisa dipakai. |
-| `--app-log 'nama=/path/absolut/*.log'` | Path file atau pola dengan `*` dan `?`. Ulangi opsi untuk menambah file atau aplikasi. Bungkus pola dengan tanda kutip agar shell meneruskannya ke Vector. |
+| `nginx` | `/var/log/nginx/access.log`, `/var/log/nginx/error.log` |
+| `apache` | `/var/log/httpd/access_log`, `/var/log/httpd/error_log` |
+| Log khusus | Masukkan `my_app=/var/log/my-app/*.log` ketika diminta. Ulangi untuk menambah file lain. |
 
-Contoh mengaktifkan preset dan log aplikasi sendiri pada host yang menyimpan file tersebut.
-
-```bash
-sudo bash install-agents-rocky10.sh \
-  --app-logs nginx \
-  --app-logs apache \
-  --app-log 'my_app=/var/log/my-app/*.log'
-```
-
-Gunakan path sesuai konfigurasi aplikasi. Jika Nginx atau Apache menulis ke path khusus, gunakan `--app-log` untuk menunjuk file tersebut. Nama aplikasi pada `--app-log` menggunakan huruf kecil, angka, atau garis bawah dan harus diawali huruf.
-
-Vector mengirim setiap baris dengan field `app_service` dan `file` ke aggregator. Saat pertama menemukan file, Vector membaca dari awal. Untuk file yang sudah memiliki checkpoint, Vector melanjutkan dari posisi terakhir. Pilih pola yang hanya mencakup file yang ingin dikirim dan hindari memasukkan file yang sama dengan nama aplikasi berbeda.
-
-### Akses file log
-
-Layanan Vector perlu akses baca ke file dan akses lintas direktori induknya. Untuk pola wildcard, berikan juga akses daftar isi pada direktori yang dicocokkan. Gunakan grup khusus yang sudah diberi akses ke log, atau ACL untuk user `vector`. Pastikan izin yang sama berlaku untuk file baru setelah rotasi.
-
-Jika menggunakan grup khusus, jalankan skrip dengan `--app-log-group` seperti contoh berikut. Ganti `app-logs` dengan grup yang sudah tersedia di server.
-
-```bash
-sudo bash install-agents-rocky10.sh --app-logs nginx --app-log-group app-logs
-sudo systemctl show vector -p SupplementaryGroups
-```
-
-Untuk menguji, buat permintaan HTTP ke Nginx atau Apache lalu cari baris access log yang baru di Grafana dengan datasource VictoriaLogs. Gunakan field `app_service` jika aggregator meneruskan field tersebut ke VictoriaLogs.
+Vector perlu izin baca file dan akses lintas direktori. Berikan juga izin membaca daftar isi direktori jika memakai wildcard. Siapkan ACL untuk user `vector` atau tambahkan grup yang sudah diberi akses pada langkah 3. Periksa izin file baru setelah rotasi. Vector membaca file yang baru ditemukan dari awal dan melanjutkan file yang telah memiliki checkpoint dari posisi terakhir.
 
 ## Verifikasi
 
