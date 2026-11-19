@@ -24,10 +24,6 @@ Penggunaan:
   --app-logs nginx|apache   Tambahkan log access/error standar. Opsi dapat diulang.
   --app-log NAMA=POLA        Tambahkan file log aplikasi dari path absolut (* dan ? didukung).
   --app-log-group GRUP      Beri layanan Vector akses melalui grup Linux yang sudah ada. Opsi dapat diulang.
-  --proxmox-listen IP:PORT  Terima syslog TCP Proxmox di IPv4 lokal Rocky Linux.
-  --proxmox-node IP         Izinkan satu IPv4 sumber Proxmox. Opsi dapat diulang.
-  --clear-proxmox-nodes     Kosongkan daftar IPv4 Proxmox sebelum mengisinya kembali.
-  --disable-proxmox-syslog  Nonaktifkan listener syslog Proxmox dan kosongkan daftar IP.
   --configure-only          Pakai pengaturan tersimpan tanpa instalasi paket. Letakkan sebagai opsi pertama.
   --active-only             Matikan passive checks Zabbix.
   --zabbix-no-psk           Nonaktifkan TLS PSK Zabbix.
@@ -95,21 +91,9 @@ ca_source=
 app_services=()
 app_log_paths=()
 app_log_groups=()
-proxmox_listen=
-proxmox_nodes=()
 app_name_pattern='^[a-z][a-z0-9_]{0,47}$'
 app_path_pattern='^/[A-Za-z0-9_./*?@-]+$'
 app_group_pattern='^[A-Za-z_][A-Za-z0-9_.-]*$'
-
-valid_ipv4() {
-    local address=$1 octet
-    local -a octets
-    [[ $address =~ ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$ ]] || return 1
-    IFS=. read -r -a octets <<< "$address"
-    for octet in "${octets[@]}"; do
-        ((octet <= 255)) || return 1
-    done
-}
 
 add_app_log() {
     local name=$1 path=$2 index
@@ -140,9 +124,7 @@ while (($#)); do
         --host-metrics) metrics=1; shift ;;
         --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
         --clear-app-log-groups) app_log_groups=(); shift ;;
-        --clear-proxmox-nodes) proxmox_nodes=(); shift ;;
-        --disable-proxmox-syslog) proxmox_listen=; proxmox_nodes=(); shift ;;
-        --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group|--proxmox-listen|--proxmox-node)
+        --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
             (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
             case "$1" in
                 --hostname) agent_hostname=$2 ;;
@@ -167,10 +149,6 @@ while (($#)); do
                 --app-log)
                     [[ $2 == *=* ]] || die 'Gunakan --app-log nama=/path/absolut/*.log.'
                     add_app_log "${2%%=*}" "${2#*=}" ;;
-                --proxmox-listen) proxmox_listen=$2 ;;
-                --proxmox-node)
-                    valid_ipv4 "$2" && [[ $2 != 0.0.0.0 ]] || die "IPv4 node Proxmox tidak valid: $2."
-                    if [[ " ${proxmox_nodes[*]} " != *" $2 "* ]]; then proxmox_nodes+=("$2"); fi ;;
                 --app-log-group)
                     [[ $2 =~ $app_group_pattern ]] || die "Nama grup log tidak valid: $2."
                     app_log_groups+=("$2") ;;
@@ -192,16 +170,6 @@ done
 for port in "$zabbix_port" "$vector_port"; do
     [[ $port =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535)) || die "Port tidak valid: $port."
 done
-if [[ -n $proxmox_listen ]]; then
-    proxmox_bind=${proxmox_listen%:*}
-    proxmox_port=${proxmox_listen##*:}
-    valid_ipv4 "$proxmox_bind" && [[ $proxmox_bind != 0.0.0.0 ]] &&
-        [[ $proxmox_port =~ ^[1-9][0-9]{3,4}$ ]] && ((proxmox_port >= 1024 && proxmox_port <= 65535)) ||
-        die 'Gunakan --proxmox-listen dengan IPv4 lokal spesifik dan port TCP 1024–65535.'
-    ((${#proxmox_nodes[@]})) || die 'Tentukan minimal satu --proxmox-node untuk mengizinkan sumber syslog.'
-elif ((${#proxmox_nodes[@]})); then
-    die 'Gunakan --proxmox-listen bersama --proxmox-node.'
-fi
 if [[ -n $psk_identity || -n $psk_source ]]; then
     [[ -n $psk_identity && -f $psk_source && -r $psk_source ]] ||
         die "--psk-identity dan --psk-file yang dapat dibaca diperlukan bersama."
@@ -406,16 +374,6 @@ sources:
       - vector.service
 YAML
     inputs='journald'
-    if [[ -n $proxmox_listen ]]; then
-        cat <<YAML
-  proxmox_syslog:
-    type: syslog
-    mode: tcp
-    address: "$proxmox_listen"
-    permit_origin:
-YAML
-        for node in "${proxmox_nodes[@]}"; do printf '      - "%s/32"\n' "$node"; done
-    fi
     if ((metrics)); then
         cat <<'YAML'
   host_metrics:
@@ -431,18 +389,8 @@ YAML
             printf '      - "%s"\n' "$path"
         done <<< "${app_log_paths[index]}"
     done
-    if [[ -n $proxmox_listen ]] || ((${#app_services[@]})); then
+    if ((${#app_services[@]})); then
         printf 'transforms:\n'
-        if [[ -n $proxmox_listen ]]; then
-            cat <<'YAML'
-  proxmox_tag:
-    type: remap
-    inputs: [proxmox_syslog]
-    source: |
-      .platform = "proxmox"
-YAML
-            inputs+=', proxmox_tag'
-        fi
         for name in "${app_services[@]}"; do
             printf '  app_tag_%s:\n    type: remap\n    inputs: [app_file_%s]\n    source: |\n      .app_service = "%s"\n' \
                 "$name" "$name" "$name"
@@ -544,10 +492,6 @@ settings=(
     --zabbix-server "$zabbix_server" --zabbix-port "$zabbix_port" --zabbix-series "$zabbix_series"
     --vector-aggregator "$vector_aggregator" --vector-port "$vector_port"
 )
-if [[ -n $proxmox_listen ]]; then
-    settings+=(--proxmox-listen "$proxmox_listen")
-    for node in "${proxmox_nodes[@]}"; do settings+=(--proxmox-node "$node"); done
-fi
 if ((passive)); then settings+=(--passive); fi
 if ((!metrics)); then settings+=(--logs-only); fi
 if [[ -n $psk_source ]]; then settings+=(--psk-identity "$psk_identity" --psk-file "$psk_dest"); fi

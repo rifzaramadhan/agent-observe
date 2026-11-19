@@ -2,6 +2,8 @@
 
 Instalasi Zabbix Agent 2 dan Vector Agent untuk **Rocky Linux 10 x86_64**. Skrip memasang paket RPM yang belum tersedia, menyiapkan konfigurasi, memvalidasinya, lalu mengaktifkan layanan melalui systemd.
 
+Untuk node **Proxmox VE**, gunakan [installer Proxmox VE](./install-agents-proxmox.sh) dan [panduan langkah demi langkah](./docs/proxmox.md). Vector pada node Proxmox mengirim log langsung ke aggregator.
+
 ## Prasyarat
 
 - Jalankan di server Rocky Linux 10 x86_64 yang akan dipantau. Siapkan akses `sudo` atau root dan pastikan systemd berjalan.
@@ -125,69 +127,6 @@ sudo systemctl show vector -p SupplementaryGroups
 ```
 
 Untuk menguji, buat permintaan HTTP ke Nginx atau Apache lalu cari baris access log yang baru di Grafana dengan datasource VictoriaLogs. Gunakan field `app_service` jika aggregator meneruskan field tersebut ke VictoriaLogs.
-
-## Log Proxmox VE
-
-Skrip berjalan pada **Rocky Linux**. Aktifkan listener Vector di host Rocky Linux yang dapat dijangkau node Proxmox, lalu kirim log dari setiap node menggunakan rsyslog. Vector meneruskan log ke Vector Aggregator yang sudah dikonfigurasi.
-
-### 1. Aktifkan penerima di Rocky Linux
-
-Contoh ini menggunakan IP receiver `192.0.2.10` dan dua node Proxmox `192.0.2.21` serta `192.0.2.22`. Ganti semua alamat contoh dengan IPv4 di jaringan manajemen Anda.
-
-```bash
-sudo bash install-agents-rocky10.sh --configure-only \
-  --proxmox-listen 192.0.2.10:1514 \
-  --proxmox-node 192.0.2.21 \
-  --proxmox-node 192.0.2.22
-```
-
-Untuk instalasi awal, gunakan opsi yang sama bersama konfigurasi deployment dan lewati `--configure-only`. Listener mengikat satu IPv4 lokal spesifik dan hanya menerima koneksi dari IP node yang didaftarkan. Izinkan koneksi TCP 1514 dari node tersebut pada firewall jaringan dan host sesuai kebutuhan. Jalur Proxmox ke receiver menggunakan syslog TCP plaintext untuk jaringan manajemen internal. Opsi TLS Vector yang sudah ada berlaku untuk koneksi dari receiver ke aggregator.
-
-### 2. Atur forwarding pada setiap node Proxmox VE
-
-Jalankan sebagai root pada node Proxmox. Pasang rsyslog jika paketnya belum tersedia.
-
-```bash
-apt install rsyslog
-```
-
-Buat `/etc/rsyslog.d/40-vector-proxmox.conf` dengan isi berikut. Ganti `target` dan `port` sesuai listener Rocky Linux.
-
-```rsyslog
-if ($programname startswith "pve" or $programname == "corosync"
-    or $programname == "vzdump" or $programname == "qmeventd"
-    or $programname == "spiceproxy") then {
-    action(
-        type="omfwd"
-        target="192.0.2.10"
-        port="1514"
-        protocol="tcp"
-        template="RSYSLOG_SyslogProtocol23Format"
-        queue.type="linkedList"
-        action.resumeRetryCount="-1"
-    )
-}
-```
-
-Jika rsyslog menerima journal melalui `imuxsock`, pastikan systemd-journald meneruskan event ke soket syslog. Jika forwarding belum aktif, buat `/etc/systemd/journald.conf.d/50-rsyslog.conf` dengan pengaturan berikut, lalu jalankan `systemctl restart systemd-journald`. Jika rsyslog sudah membaca journal lewat `imjournal`, gunakan input yang tersedia agar log tidak dikirim dua kali.
-
-```ini
-[Journal]
-ForwardToSyslog=yes
-```
-
-Validasi konfigurasi dan kirim log uji.
-
-```bash
-rsyslogd -N1 && systemctl enable rsyslog && systemctl restart rsyslog
-logger -t pve-vector-test "pve-vector-test $(hostname) $(date -Is)"
-```
-
-### 3. Verifikasi di VictoriaLogs
-
-Cari `pve-vector-test` di Grafana melalui datasource VictoriaLogs. Vector memberi label `platform="proxmox"` sebelum meneruskan log. Gunakan field tersebut jika konfigurasi aggregator meneruskannya ke VictoriaLogs. Aturan forwarding ini mencakup pesan daemon dengan nama program yang dipilih. File access log PVE, output detail task, dan log di dalam VM atau container memerlukan input tambahan pada perangkat yang menyimpan log tersebut.
-
-Untuk mengganti daftar IP pengirim, jalankan `--configure-only --clear-proxmox-nodes` bersama daftar `--proxmox-node` yang baru. Untuk menonaktifkan listener, jalankan `--configure-only --disable-proxmox-syslog`.
 
 ## Verifikasi
 
