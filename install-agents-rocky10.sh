@@ -7,6 +7,7 @@ usage() {
     cat <<'HELP'
 Penggunaan:
   sudo bash install-agents-rocky10.sh [opsi]
+  sudo bash install-agents-rocky10.sh --configure-only [opsi perubahan]
 
   --hostname NAMA           Nama Host di Zabbix (default: hostname OS)
   --zabbix-server HOST      IPv4 atau DNS Zabbix Server/Proxy (default: 10.7.146.72)
@@ -23,6 +24,13 @@ Penggunaan:
   --app-logs nginx|apache   Tambahkan log access/error standar. Opsi dapat diulang.
   --app-log NAMA=POLA        Tambahkan file log aplikasi dari path absolut (* dan ? didukung).
   --app-log-group GRUP      Beri layanan Vector akses melalui grup Linux yang sudah ada. Opsi dapat diulang.
+  --configure-only          Pakai pengaturan tersimpan tanpa instalasi paket. Letakkan sebagai opsi pertama.
+  --active-only             Matikan passive checks Zabbix.
+  --zabbix-no-psk           Nonaktifkan TLS PSK Zabbix.
+  --vector-no-tls           Nonaktifkan TLS Vector dan hapus referensi CA dari konfigurasi.
+  --host-metrics            Aktifkan kembali pengiriman metrik host.
+  --clear-app-logs           Kosongkan sumber file log aplikasi sebelum menambah daftar baru.
+  --clear-app-log-groups     Kosongkan daftar grup tambahan untuk akses file log.
   --replace-config          Izinkan mengganti konfigurasi agen milik deployment lain
   -h, --help                Tampilkan opsi
 
@@ -35,6 +43,37 @@ HELP
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 info() { printf '%s\n' "$*"; }
+
+configure_only=0
+if [[ ${1:-} == --configure-only ]]; then
+    configure_only=1
+    shift
+fi
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+
+((EUID == 0)) || die "Jalankan skrip menggunakan sudo."
+source /etc/os-release
+[[ $ID == rocky && ${VERSION_ID%%.*} == 10 ]] || die "Skrip ini ditujukan untuk Rocky Linux 10."
+[[ $(uname -m) == x86_64 ]] || die "Skrip ini ditujukan untuk x86_64."
+[[ -d /run/systemd/system ]] || die "Systemd harus berjalan."
+
+exec 9>/run/lock/victoria-install-agents.lock
+flock -n 9 || die "Instalasi agen lain sedang berjalan."
+
+state_file=/etc/agent-observe.args
+state_header='# agent-observe settings v1'
+if [[ -e $state_file || -L $state_file ]]; then
+    [[ -f $state_file && ! -L $state_file && $(stat -c '%u:%g:%a' -- "$state_file") == 0:0:600 ]] ||
+        die "File pengaturan harus milik root:root dengan mode 0600: $state_file."
+    mapfile -t saved_args < "$state_file"
+    [[ ${saved_args[0]:-} == "$state_header" && ${#saved_args[@]} -gt 1 ]] ||
+        die "Format pengaturan tidak dikenali: $state_file."
+elif ((configure_only)); then
+    die "Pengaturan belum tersimpan. Jalankan versi skrip ini sekali dengan semua opsi deployment yang berlaku."
+fi
+if ((configure_only)); then
+    set -- "${saved_args[@]:1}" "$@"
+fi
 
 zabbix_server=10.7.146.72
 zabbix_port=10051
@@ -79,6 +118,12 @@ while (($#)); do
         --logs-only) metrics=0; shift ;;
         --replace-config) replace=1; shift ;;
         --vector-tls) vector_tls=1; shift ;;
+        --active-only) passive=0; shift ;;
+        --zabbix-no-psk) psk_identity=; psk_source=; shift ;;
+        --vector-no-tls) vector_tls=0; ca_source=; shift ;;
+        --host-metrics) metrics=1; shift ;;
+        --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
+        --clear-app-log-groups) app_log_groups=(); shift ;;
         --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
             (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
             case "$1" in
@@ -113,11 +158,6 @@ while (($#)); do
     esac
 done
 
-((EUID == 0)) || die "Jalankan skrip menggunakan sudo."
-source /etc/os-release
-[[ $ID == rocky && ${VERSION_ID%%.*} == 10 ]] || die "Skrip ini ditujukan untuk Rocky Linux 10."
-[[ $(uname -m) == x86_64 ]] || die "Skrip ini ditujukan untuk x86_64."
-[[ -d /run/systemd/system ]] || die "Systemd harus berjalan."
 [[ $zabbix_series == 8.0 || $zabbix_series == 7.0 ]] || die "Pilih --zabbix-series 8.0 atau 7.0."
 agent_hostname=${agent_hostname:-$(hostname)}
 [[ $agent_hostname =~ ^[[:alnum:]_.-][[:alnum:]_.[:blank:]-]{0,127}$ ]] &&
@@ -150,9 +190,6 @@ for group in "${app_log_groups[@]}"; do
         vector_groups+=" $group"
     fi
 done
-
-exec 9>/run/lock/victoria-install-agents.lock
-flock -n 9 || die "Instalasi agen lain sedang berjalan."
 
 zbx_config=/etc/zabbix/zabbix_agent2.conf
 vector_config=/etc/vector/vector.yaml
@@ -247,10 +284,14 @@ setup_vector_repo=0
 vector_setup_url=https://setup.vector.dev
 if ! rpm -q vector &>/dev/null; then
     install_vector=1
-    if ! dnf -q --cacheonly repolist --enabled |
+    if ((!configure_only)) && ! dnf -q --cacheonly repolist --enabled |
         awk '$1 == "vector" { found=1 } END { exit !found }'; then
         setup_vector_repo=1
     fi
+fi
+
+if ((configure_only)) && { [[ -z $installed_series ]] || ((install_vector)); }; then
+    die "Mode --configure-only memerlukan paket zabbix-agent2 dan vector yang sudah terpasang."
 fi
 
 if [[ -z $installed_series ]] || ((install_vector)); then
@@ -408,7 +449,7 @@ put_file() {
     mv -f -- "$temp_install" "$target"
     temp_install=
     if command -v restorecon >/dev/null; then restorecon "$target"; fi
-    restart_needed[$service]=1
+    if [[ -n $service ]]; then restart_needed[$service]=1; fi
 }
 
 info "Memasang dan memvalidasi konfigurasi agen."
@@ -445,7 +486,31 @@ for service in "${services[@]}"; do
     fi
 done
 
+# Tulis pengaturan setelah konfigurasi valid dan kedua layanan terverifikasi aktif.
+settings=(
+    --hostname "$agent_hostname"
+    --zabbix-server "$zabbix_server" --zabbix-port "$zabbix_port" --zabbix-series "$zabbix_series"
+    --vector-aggregator "$vector_aggregator" --vector-port "$vector_port"
+)
+if ((passive)); then settings+=(--passive); fi
+if ((!metrics)); then settings+=(--logs-only); fi
+if [[ -n $psk_source ]]; then settings+=(--psk-identity "$psk_identity" --psk-file "$psk_dest"); fi
+if ((vector_tls)); then settings+=(--vector-tls); fi
+if [[ -n $ca_source ]]; then settings+=(--vector-ca "$ca_dest"); fi
+for ((index=0; index<${#app_services[@]}; index++)); do
+    while IFS= read -r path; do
+        settings+=(--app-log "${app_services[index]}=$path")
+    done <<< "${app_log_paths[index]}"
+done
+read -r -a state_groups <<< "$vector_groups"
+for group in "${state_groups[@]:1}"; do
+    settings+=(--app-log-group "$group")
+done
+printf '%s\n' "$state_header" "${settings[@]}" > "$work_dir/settings"
+put_file "$work_dir/settings" "$state_file" root 0600 ''
+
 info "Kedua agen aktif. Host Zabbix: $agent_hostname"
+info "Pengaturan deployment tersimpan di $state_file."
 info "Zabbix active: $zabbix_server:$zabbix_port | Vector native: $vector_aggregator:$vector_port"
 if [[ -n $backup_dir ]]; then info "Cadangan konfigurasi: $backup_dir"; fi
 info 'Verifikasi Latest data di Zabbix dan cari log uji berikut di VictoriaLogs/Grafana.'
