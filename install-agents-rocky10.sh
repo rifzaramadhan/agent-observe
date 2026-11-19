@@ -8,11 +8,15 @@ usage() {
 Penggunaan:
   sudo bash install-agents-rocky10.sh [opsi]
   sudo bash install-agents-rocky10.sh --configure-only [opsi perubahan]
+  sudo bash install-agents-rocky10.sh --install-plugins --zabbix-plugin NAMA
 
   --hostname NAMA           Nama Host di Zabbix (default: hostname OS)
   --zabbix-server HOST      IPv4 atau DNS Zabbix Server/Proxy (default: 10.7.146.72)
   --zabbix-port PORT        Port active checks (default: 10051)
   --zabbix-series VERSI     Seri paket resmi 8.0 atau 7.0 (default: 8.0)
+  --zabbix-plugin NAMA      Pasang dan muat plugin Agent 2 (contoh: postgresql, mongodb, mssql). Dapat diulang.
+  --install-plugins         Tambah plugin setelah instalasi dengan pengaturan tersimpan. Letakkan pertama.
+  --clear-zabbix-plugins    Berhenti memuat plugin pilihan sebelumnya. Paket tetap terpasang.
   --passive                 Aktifkan juga passive checks TCP 10050 dari --zabbix-server
   --psk-identity IDENTITAS  Aktifkan Zabbix TLS PSK bersama --psk-file
   --psk-file FILE           Satu baris kunci hex 32–512 karakter dengan panjang genap
@@ -45,10 +49,11 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 info() { printf '%s\n' "$*"; }
 
 configure_only=0
-if [[ ${1:-} == --configure-only ]]; then
-    configure_only=1
-    shift
-fi
+install_plugins_only=0
+case "${1:-}" in
+    --configure-only) configure_only=1; shift ;;
+    --install-plugins) install_plugins_only=1; shift ;;
+esac
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 
 ((EUID == 0)) || die "Jalankan skrip menggunakan sudo."
@@ -68,16 +73,17 @@ if [[ -e $state_file || -L $state_file ]]; then
     mapfile -t saved_args < "$state_file"
     [[ ${saved_args[0]:-} == "$state_header" && ${#saved_args[@]} -gt 1 ]] ||
         die "Format pengaturan tidak dikenali: $state_file."
-elif ((configure_only)); then
+elif ((configure_only || install_plugins_only)); then
     die "Pengaturan belum tersimpan. Jalankan versi skrip ini sekali dengan semua opsi deployment yang berlaku."
 fi
-if ((configure_only)); then
+if ((configure_only || install_plugins_only)); then
     set -- "${saved_args[@]:1}" "$@"
 fi
 
 zabbix_server=10.7.146.72
 zabbix_port=10051
 zabbix_series=8.0
+zabbix_plugins=()
 vector_aggregator=10.7.146.73
 vector_port=6000
 agent_hostname=
@@ -115,6 +121,7 @@ while (($#)); do
     case "$1" in
         -h|--help) usage; exit 0 ;;
         --passive) passive=1; shift ;;
+        --clear-zabbix-plugins) zabbix_plugins=(); shift ;;
         --logs-only) metrics=0; shift ;;
         --replace-config) replace=1; shift ;;
         --vector-tls) vector_tls=1; shift ;;
@@ -124,13 +131,17 @@ while (($#)); do
         --host-metrics) metrics=1; shift ;;
         --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
         --clear-app-log-groups) app_log_groups=(); shift ;;
-        --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
+        --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
             (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
             case "$1" in
                 --hostname) agent_hostname=$2 ;;
                 --zabbix-server) zabbix_server=$2 ;;
                 --zabbix-port) zabbix_port=$2 ;;
                 --zabbix-series) zabbix_series=$2 ;;
+                --zabbix-plugin)
+                    [[ $2 =~ ^[a-z][a-z0-9-]{0,39}$ ]] ||
+                        die "Nama plugin Zabbix tidak valid: $2."
+                    if [[ " ${zabbix_plugins[*]} " != *" $2 "* ]]; then zabbix_plugins+=("$2"); fi ;;
                 --psk-identity) psk_identity=$2 ;;
                 --psk-file) psk_source=$2 ;;
                 --vector-aggregator) vector_aggregator=$2 ;;
@@ -158,6 +169,9 @@ while (($#)); do
     esac
 done
 
+if ((install_plugins_only && ${#zabbix_plugins[@]} == 0)); then
+    die 'Tentukan minimal satu --zabbix-plugin untuk mode --install-plugins.'
+fi
 [[ $zabbix_series == 8.0 || $zabbix_series == 7.0 ]] || die "Pilih --zabbix-series 8.0 atau 7.0."
 agent_hostname=${agent_hostname:-$(hostname)}
 [[ $agent_hostname =~ ^[[:alnum:]_.-][[:alnum:]_.[:blank:]-]{0,127}$ ]] &&
@@ -284,19 +298,37 @@ setup_vector_repo=0
 vector_setup_url=https://setup.vector.dev
 if ! rpm -q vector &>/dev/null; then
     install_vector=1
-    if ((!configure_only)) && ! dnf -q --cacheonly repolist --enabled |
+    if ((!configure_only && !install_plugins_only)) && ! dnf -q --cacheonly repolist --enabled |
         awk '$1 == "vector" { found=1 } END { exit !found }'; then
         setup_vector_repo=1
     fi
 fi
 
-if ((configure_only)) && { [[ -z $installed_series ]] || ((install_vector)); }; then
-    die "Mode --configure-only memerlukan paket zabbix-agent2 dan vector yang sudah terpasang."
+if ((configure_only || install_plugins_only)) && { [[ -z $installed_series ]] || ((install_vector)); }; then
+    die "Mode --configure-only dan --install-plugins memerlukan zabbix-agent2 dan vector yang sudah terpasang."
 fi
 
-if [[ -z $installed_series ]] || ((install_vector)); then
+missing_plugins=()
+for plugin in "${zabbix_plugins[@]}"; do
+    package="zabbix-agent2-plugin-$plugin"
+    version=$(rpm -q --qf '%{VERSION}' "$package" 2>/dev/null) || version=
+    version=${version#*:}
+    if [[ -z $version ]]; then
+        missing_plugins+=("$package")
+    elif [[ $version != "$zabbix_series".* || $version == *~* ]]; then
+        die "Versi $package yang terpasang ($version) tidak cocok dengan seri $zabbix_series."
+    fi
+done
+if ((configure_only && ${#missing_plugins[@]} > 0)); then
+    die "Paket belum terpasang: ${missing_plugins[*]}. Gunakan --install-plugins bersama --zabbix-plugin."
+fi
+
+install_zabbix_packages=0
+if [[ -z $installed_series ]] || ((${#missing_plugins[@]})); then install_zabbix_packages=1; fi
+
+if ((install_zabbix_packages)) || ((install_vector)); then
     command -v curl >/dev/null || die "curl diperlukan untuk mengecek koneksi HTTPS sebelum instalasi."
-    if [[ -z $installed_series ]]; then
+    if ((install_zabbix_packages)); then
         case "$zabbix_series" in
             8.0) zabbix_package_repo=https://repo.zabbix.com/zabbix/8.0/stable/rocky/10/x86_64 ;;
             7.0) zabbix_package_repo=https://repo.zabbix.com/zabbix/7.0/rocky/10/x86_64 ;;
@@ -310,11 +342,11 @@ if [[ -z $installed_series ]] || ((install_vector)); then
         fi
     fi
 else
-    info "Kedua paket sudah terpasang. Pengecekan koneksi internet dilewati."
+    info "Paket yang diminta sudah terpasang. Pengecekan koneksi internet dilewati."
 fi
 
-if [[ -z $installed_series ]]; then
-    info "Memasang Zabbix Agent 2 seri $zabbix_series."
+if ((install_zabbix_packages)); then
+    info "Memasang paket Zabbix seri $zabbix_series."
     repo_version=$(rpm -q --qf '%{VERSION}' zabbix-release 2>/dev/null) || repo_version=
     if [[ -z $repo_version ]]; then
         repo_base=https://repo.zabbix.com/zabbix
@@ -326,7 +358,15 @@ if [[ -z $installed_series ]]; then
     elif [[ $repo_version != "$zabbix_series" && $repo_version != "$zabbix_series".* ]]; then
         die "Repositori Zabbix seri $repo_version sudah terpasang. Gunakan seri yang sesuai."
     fi
-    dnf -y --disablerepo='epel*' install "zabbix-agent2-$zabbix_series.*"
+    zabbix_packages=()
+    zabbix_dnf_args=(--disablerepo='epel*')
+    if [[ -z $installed_series ]]; then
+        zabbix_packages+=("zabbix-agent2-$zabbix_series.*")
+    else
+        zabbix_dnf_args+=(--exclude=zabbix-agent2)
+    fi
+    for package in "${missing_plugins[@]}"; do zabbix_packages+=("$package-$zabbix_series.*"); done
+    dnf -y "${zabbix_dnf_args[@]}" install "${zabbix_packages[@]}"
 fi
 
 if ((install_vector)); then
@@ -350,6 +390,22 @@ done
 getent group systemd-journal >/dev/null || die "Grup systemd-journal tidak ditemukan."
 install -d -m 0750 -o vector -g vector /var/lib/vector
 
+plugin_configs=()
+for plugin in "${zabbix_plugins[@]}"; do
+    package="zabbix-agent2-plugin-$plugin"
+    package_files=$(rpm -ql "$package") || die "Gagal membaca daftar file dari $package."
+    found=0
+    while IFS= read -r path; do
+        case "$path" in
+            /etc/zabbix/zabbix_agent2.d/*.conf)
+                [[ -f $path && -r $path ]] || die "Konfigurasi plugin tidak dapat dibaca: $path."
+                plugin_configs+=("$path")
+                found=1 ;;
+        esac
+    done <<< "$package_files"
+    ((found)) || die "Tidak menemukan konfigurasi Agent 2 dari paket $package."
+done
+
 {
     printf '%s\nLogType=system\nHostname=%s\nServerActive=%s:%s\n' \
         "$marker" "$agent_hostname" "$zabbix_server" "$zabbix_port"
@@ -359,6 +415,7 @@ install -d -m 0750 -o vector -g vector /var/lib/vector
     if [[ -n $psk_source ]]; then
         printf 'TLSConnect=psk\nTLSAccept=psk\nTLSPSKIdentity=%s\nTLSPSKFile=%s\n' "$psk_identity" "$psk_dest"
     fi
+    for path in "${plugin_configs[@]}"; do printf 'Include=%s\n' "$path"; done
 } > "$work_dir/zabbix.conf"
 
 {
@@ -492,6 +549,7 @@ settings=(
     --zabbix-server "$zabbix_server" --zabbix-port "$zabbix_port" --zabbix-series "$zabbix_series"
     --vector-aggregator "$vector_aggregator" --vector-port "$vector_port"
 )
+for plugin in "${zabbix_plugins[@]}"; do settings+=(--zabbix-plugin "$plugin"); done
 if ((passive)); then settings+=(--passive); fi
 if ((!metrics)); then settings+=(--logs-only); fi
 if [[ -n $psk_source ]]; then settings+=(--psk-identity "$psk_identity" --psk-file "$psk_dest"); fi

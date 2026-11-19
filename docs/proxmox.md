@@ -74,6 +74,33 @@ logger -t pve-vector-test "pve-vector-test $(hostname) $(date -Is)"
 2. Cari `pve-vector-test` di Grafana melalui datasource VictoriaLogs. Gunakan `platform="proxmox"` jika field tersebut dipertahankan aggregator.
 3. Untuk file log, cari entri baru dari UI/API atau task yang memang dijalankan. Vector mengirim field `app_service` dengan nilai `pve_access` atau `pve_task` untuk memudahkan pencarian jika field dipertahankan aggregator.
 
+## Plugin Zabbix Agent 2
+
+Tambahkan `--zabbix-plugin NAMA` saat instalasi awal. Opsi dapat diulang untuk memasang beberapa plugin, misalnya `postgresql`, `mongodb`, atau `mssql`. Paket harus tersedia untuk seri Zabbix dan platform yang digunakan.
+
+```bash
+bash install-agents-proxmox.sh \
+  --zabbix-plugin postgresql \
+  --zabbix-plugin mongodb
+```
+
+Untuk host yang sudah dikelola skrip, gunakan `--install-plugins` sebagai opsi pertama. Skrip menggunakan pengaturan tersimpan dan hanya mengunduh paket plugin yang belum tersedia.
+
+```bash
+bash install-agents-proxmox.sh --install-plugins --zabbix-plugin mssql
+```
+
+Skrip menambahkan `Include` untuk file konfigurasi dari paket yang dipilih dan memvalidasi Agent 2 sebelum menerapkan perubahan layanan. Untuk memuat paket plugin yang sudah terpasang tanpa internet, gunakan `--configure-only --zabbix-plugin NAMA`. Dengan `--configure-only --clear-zabbix-plugins`, Agent 2 berhenti memuat plugin yang dipilih sebelumnya dan paketnya tetap terpasang. Tambahkan opsi `--zabbix-plugin` setelah opsi tersebut jika ingin mengganti daftar pilihan.
+
+Sesuaikan template Zabbix, macro, dan akses database untuk plugin yang digunakan. Periksa status Agent 2 dan log journal setelah instalasi.
+
+```bash
+systemctl is-active zabbix-agent2
+journalctl -u zabbix-agent2 -n 50 --no-pager
+```
+
+[Daftar dan persyaratan plugin resmi Zabbix](https://www.zabbix.com/documentation/current/en/manual/concepts/agent2/loadable_plugins)
+
 ## 5. Ubah konfigurasi setelah instalasi
 
 Jadikan `--configure-only` opsi pertama dan cantumkan hanya perubahan yang diperlukan. Mode ini membutuhkan kedua paket sudah terpasang, mempertahankan pengaturan tersimpan, serta memvalidasi konfigurasi sebelum restart layanan yang berubah. Skrip mencatat pengaturan di `/etc/agent-observe.args` dan menyimpan cadangan konfigurasi yang diganti di `/var/backups/victoria-agents/`.

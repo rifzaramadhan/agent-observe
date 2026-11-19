@@ -92,6 +92,33 @@ Opsi `--app-logs`, `--app-log`, dan `--app-log-group` menambah entri ke pengatur
 
 Untuk deployment dari versi lama, jalankan versi skrip terbaru sekali dengan **seluruh opsi deployment yang berlaku**, termasuk endpoint, TLS, sumber log, dan grup yang digunakan. Langkah ini membuat pengaturan awal untuk `--configure-only`. Menjalankan mode instalasi biasa setelah itu tetap menggunakan default dan opsi dari perintah tersebut sebagai konfigurasi lengkap.
 
+## Plugin Zabbix Agent 2
+
+Tambahkan `--zabbix-plugin NAMA` saat instalasi awal. Opsi dapat diulang untuk memasang beberapa plugin, misalnya `postgresql`, `mongodb`, atau `mssql`. Paket harus tersedia untuk seri Zabbix dan platform yang digunakan.
+
+```bash
+sudo bash install-agents-rocky10.sh \
+  --zabbix-plugin postgresql \
+  --zabbix-plugin mongodb
+```
+
+Untuk host yang sudah dikelola skrip, gunakan `--install-plugins` sebagai opsi pertama. Skrip menggunakan pengaturan tersimpan dan hanya mengunduh paket plugin yang belum tersedia.
+
+```bash
+sudo bash install-agents-rocky10.sh --install-plugins --zabbix-plugin mssql
+```
+
+Skrip menambahkan `Include` untuk file konfigurasi dari paket yang dipilih dan memvalidasi Agent 2 sebelum menerapkan perubahan layanan. Untuk memuat paket plugin yang sudah terpasang tanpa internet, gunakan `--configure-only --zabbix-plugin NAMA`. Dengan `--configure-only --clear-zabbix-plugins`, Agent 2 berhenti memuat plugin yang dipilih sebelumnya dan paketnya tetap terpasang. Tambahkan opsi `--zabbix-plugin` setelah opsi tersebut jika ingin mengganti daftar pilihan.
+
+Sesuaikan template Zabbix, macro, dan akses database untuk plugin yang digunakan. Periksa status Agent 2 dan log journal setelah instalasi.
+
+```bash
+sudo systemctl is-active zabbix-agent2
+sudo journalctl -u zabbix-agent2 -n 50 --no-pager
+```
+
+[Daftar dan persyaratan plugin resmi Zabbix](https://www.zabbix.com/documentation/current/en/manual/concepts/agent2/loadable_plugins)
+
 ## Log aplikasi
 
 Secara default Vector membaca `journald`, termasuk keluaran aplikasi yang masuk ke journal systemd. Tambahkan opsi berikut untuk log yang ditulis langsung ke file.
