@@ -438,6 +438,10 @@ check_existing_config() {
     [[ -e $file ]] || return 0
     ((replace)) && return 0
     grep -Fxq -- "$marker" "$file" && return 0
+    if [[ $file == "$vector_config" && -r $file ]] &&
+        awk '/^[[:space:]]*($|#)/ { next } { content=1; exit } END { exit content ? 1 : 0 }' "$file"; then
+        return 0
+    fi
 
     # Izinkan conffile standar yang checksum-nya masih sama dengan paket DEB.
     local packaged_hash actual_hash
@@ -740,22 +744,30 @@ put_file "$work_dir/vector.conf" "$vector_dropin" root 0644 "${services[1]}"
 runuser -u zabbix -- zabbix_agent2 -T -c "$zbx_config"
 runuser -u vector -- vector validate --no-environment "$vector_config"
 
+report_service_failure() {
+    local service=$1
+    systemctl status "$service" --no-pager --full >&2 || :
+    journalctl -u "$service" --since "@$start_at" -n 30 --no-pager >&2 || :
+    die "Layanan gagal berjalan: $service."
+}
+
 changing_services=1
 systemctl daemon-reload
+start_at=$(date +%s)
 for service in "${services[@]}"; do
     systemctl enable "$service"
-    if [[ ${restart_needed[$service]:-0} == 1 && ${previous_active[$service]} == active ]]; then
-        systemctl restart "$service"
+    action=start
+    if systemctl is-active --quiet "$service"; then
+        if [[ ${restart_needed[$service]:-0} == 1 ]]; then action=restart; fi
     else
-        systemctl start "$service"
+        # Paket bisa mencoba start sebelum konfigurasi tersedia dan mencapai start limit.
+        systemctl reset-failed "$service" >/dev/null 2>&1 || :
     fi
+    systemctl "$action" "$service" || report_service_failure "$service"
 done
 sleep 2
 for service in "${services[@]}"; do
-    if ! systemctl is-active --quiet "$service"; then
-        journalctl -u "$service" -n 20 --no-pager >&2 || :
-        die "Layanan gagal berjalan: $service."
-    fi
+    systemctl is-active --quiet "$service" || report_service_failure "$service"
 done
 
 # Tulis pengaturan setelah konfigurasi valid dan kedua layanan terverifikasi aktif.
