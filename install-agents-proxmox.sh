@@ -631,15 +631,29 @@ done
     for path in "${plugin_configs[@]}"; do printf 'Include=%s\n' "$path"; done
 } > "$work_dir/zabbix.conf"
 
+# Vector cannot follow journals across boots with journalctl 250 through 257.
+journal_boot_only=true
+journalctl_version=$(LC_ALL=C journalctl --version 2>/dev/null) || journalctl_version=
+if [[ $journalctl_version =~ ^systemd[[:blank:]]+([0-9]{1,5})([.[:space:]]|$) ]]; then
+    systemd_major=$((10#${BASH_REMATCH[1]}))
+    if ((systemd_major >= 250 && systemd_major <= 257)); then
+        info "systemd $systemd_major terdeteksi. Vector akan membaca journal dari boot saat ini."
+    else
+        journal_boot_only=false
+    fi
+else
+    info "Versi journalctl tidak terdeteksi. Vector akan membaca journal dari boot saat ini."
+fi
+
 {
     printf '%s\n' "$marker"
-    cat <<'YAML'
+    cat <<YAML
 data_dir: /var/lib/vector
 sources:
   journald:
     type: journald
     since_now: true
-    current_boot_only: false
+    current_boot_only: $journal_boot_only
     exclude_units:
       - vector.service
 YAML
