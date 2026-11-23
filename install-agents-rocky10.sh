@@ -796,8 +796,12 @@ YAML
     type: host_metrics
     scrape_interval_secs: 30
     filesystem:
+      filesystems:
+        excludes:
+          - nsfs
       mountpoints:
         excludes:
+          - "/run/docker/netns/*"
           - "/run/user/*"
           - "/run/user/**/*"
           - "/run/media/**/*"
