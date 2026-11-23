@@ -26,6 +26,8 @@ Penggunaan:
   --vector-tls              Aktifkan TLS dan verifikasi sertifikat serta nama endpoint
   --vector-ca FILE          Gunakan CA PEM internal dan aktifkan TLS
   --logs-only               Kirim log journald dan log aplikasi yang dipilih, tanpa host metrics.
+  --docker-monitoring       Aktifkan preset metrik dan log Docker. Layanan diberi akses socket Docker.
+  --no-docker-monitoring    Nonaktifkan preset Docker.
   --app-logs nginx|apache   Tambahkan log access/error standar. Opsi dapat diulang.
   --app-log NAMA=POLA        Tambahkan file log aplikasi dari path absolut (* dan ? didukung).
   --app-log-group GRUP      Beri layanan Vector akses melalui grup Linux yang sudah ada. Opsi dapat diulang.
@@ -107,6 +109,8 @@ ca_source=
 app_services=()
 app_log_paths=()
 app_log_groups=()
+docker_monitoring=0
+docker_socket=/var/run/docker.sock
 app_name_pattern='^[a-z][a-z0-9_]{0,47}$'
 app_path_pattern='^/[A-Za-z0-9_./*?@-]+$'
 app_group_pattern='^[A-Za-z_][A-Za-z0-9_.-]*$'
@@ -140,6 +144,8 @@ parse_args() {
             --zabbix-no-psk) psk_identity=; psk_source=; shift ;;
             --vector-no-tls) vector_tls=0; ca_source=; shift ;;
             --host-metrics) metrics=1; shift ;;
+            --docker-monitoring) docker_monitoring=1; shift ;;
+            --no-docker-monitoring) docker_monitoring=0; shift ;;
             --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
             --clear-app-log-groups) app_log_groups=(); shift ;;
             --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
@@ -238,7 +244,10 @@ wizard_collect() {
         wizard_toggle 'Metrik host' "$([[ $metrics == 1 ]] && printf aktif || printf nonaktif)" --host-metrics --logs-only
     fi
 
-    if wizard_step '3/6 File log aplikasi'; then
+    if wizard_step '3/6 File log aplikasi dan preset Docker'; then
+        info "Preset Docker memberi Agent 2 dan Vector akses ke socket Docker. Akses ini setara dengan hak root."
+        wizard_toggle 'Preset Docker (metrik dan log)' "$([[ $docker_monitoring == 1 ]] && printf aktif || printf nonaktif)" \
+            --docker-monitoring --no-docker-monitoring
         wizard_choice 'File log: [t] tambah, [g] ganti, [h] hapus dari koleksi, [Enter] lewati: ' '^(t|g|h|s|skip)?$'
         case "$wizard_reply" in
             g|h) wizard_args+=(--clear-app-logs) ;;
@@ -319,6 +328,7 @@ wizard_confirm() {
     printf '  File log aplikasi: %s\n' "${app_services[*]:-tidak ada}"
     printf '  Grup log tambahan: %s\n' "${app_log_groups[*]:-tidak ada}"
     printf '  Plugin Zabbix: %s\n' "${zabbix_plugins[*]:-tidak ada}"
+    printf '  Preset Docker: %s\n' "$([[ $docker_monitoring == 1 ]] && printf aktif || printf nonaktif)"
     if ((replace)); then info "  Penggantian konfigurasi deployment lain diizinkan."; fi
     wizard_choice 'Instal paket yang diperlukan dan terapkan konfigurasi? [y/N]: ' '^(y|n|s|skip)?$'
     if [[ $wizard_reply != y ]]; then
@@ -368,7 +378,19 @@ done
 
 if ((interactive)); then wizard_confirm; fi
 
+if ((docker_monitoring)); then
+    [[ -S $docker_socket ]] || die "Socket Docker belum tersedia: $docker_socket. Pastikan Docker Engine aktif."
+    docker_owner=$(stat -Lc '%G:%g' -- "$docker_socket") || die "Gagal memeriksa grup socket Docker."
+    [[ $docker_owner =~ ^docker:[1-9][0-9]*$ ]] || die "Preset Docker memerlukan socket dengan grup docker non-root: $docker_socket."
+    command -v curl >/dev/null || die "curl diperlukan untuk memeriksa akses API Docker."
+fi
+vector_service_groups=$vector_groups
+if ((docker_monitoring)) && [[ " $vector_service_groups " != *" docker "* ]]; then
+    vector_service_groups+=" docker"
+fi
+
 zbx_config=/etc/zabbix/zabbix_agent2.conf
+zbx_docker_dropin=/etc/systemd/system/zabbix-agent2.service.d/60-victoria-docker.conf
 vector_config=/etc/vector/vector.yaml
 vector_dropin=/etc/systemd/system/vector.service.d/50-victoria-agent.conf
 psk_dest=/etc/zabbix/victoria-agent.psk
@@ -440,6 +462,11 @@ check_existing_config() {
 check_existing_config "$zbx_config" zabbix-agent2
 check_existing_config "$vector_config" vector
 check_existing_config "$vector_dropin" vector
+manage_zbx_docker_dropin=0
+if ((docker_monitoring)) || grep -Fxq -- "$marker" "$zbx_docker_dropin" 2>/dev/null; then
+    check_existing_config "$zbx_docker_dropin" zabbix-agent2
+    manage_zbx_docker_dropin=1
+fi
 
 installed_series=$(rpm -q --qf '%{VERSION}' zabbix-agent2 2>/dev/null) || installed_series=
 if [[ -n $installed_series && $installed_series != "$zabbix_series".* ]]; then
@@ -552,6 +579,15 @@ for service in "${services[@]}"; do
 done
 getent group systemd-journal >/dev/null || die "Grup systemd-journal tidak ditemukan."
 install -d -m 0750 -o vector -g vector /var/lib/vector
+if ((docker_monitoring)); then
+    info "Menguji akses Docker untuk Zabbix Agent 2 dan Vector."
+    for account in zabbix vector; do
+        runuser -u "$account" -g "$account" -G docker -- \
+            curl -q --fail --silent --show-error --max-time 5 --noproxy '*' \
+            --unix-socket "$docker_socket" http://localhost/_ping >/dev/null ||
+            die "User $account tidak dapat mengakses API Docker melalui $docker_socket."
+    done
+fi
 
 plugin_configs=()
 for plugin in "${zabbix_plugins[@]}"; do
@@ -577,6 +613,9 @@ done
     fi
     if [[ -n $psk_source ]]; then
         printf 'TLSConnect=psk\nTLSAccept=psk\nTLSPSKIdentity=%s\nTLSPSKFile=%s\n' "$psk_identity" "$psk_dest"
+    fi
+    if ((docker_monitoring)); then
+        printf 'Plugins.Docker.Endpoint=unix://%s\n' "$docker_socket"
     fi
     for path in "${plugin_configs[@]}"; do printf 'Include=%s\n' "$path"; done
 } > "$work_dir/zabbix.conf"
@@ -611,6 +650,14 @@ sources:
       - vector.service
 YAML
     inputs='journald'
+    if ((docker_monitoring)); then
+        cat <<YAML
+  docker_container_logs:
+    type: docker_logs
+    docker_host: "unix://$docker_socket"
+YAML
+        inputs+=', docker_container_logs'
+    fi
     if ((metrics)); then
         cat <<'YAML'
   host_metrics:
@@ -662,7 +709,7 @@ YAML
 cat > "$work_dir/vector.conf" <<SYSTEMD
 $marker
 [Service]
-SupplementaryGroups=$vector_groups
+SupplementaryGroups=$vector_service_groups
 ExecStartPre=
 ExecStartPre=/usr/bin/vector validate --skip-healthchecks $vector_config
 ExecStart=
@@ -705,6 +752,13 @@ if [[ -n $psk_source ]]; then
 fi
 if [[ -n $ca_source ]]; then
     put_file "$ca_source" "$ca_dest" vector 0640 "${services[1]}"
+fi
+if ((manage_zbx_docker_dropin)); then
+    {
+        printf '%s\n[Service]\n' "$marker"
+        if ((docker_monitoring)); then printf '%s\n' 'SupplementaryGroups=docker'; fi
+    } > "$work_dir/zabbix-docker.conf"
+    put_file "$work_dir/zabbix-docker.conf" "$zbx_docker_dropin" root 0644 "${services[0]}"
 fi
 put_file "$work_dir/zabbix.conf" "$zbx_config" zabbix 0640 "${services[0]}"
 put_file "$work_dir/vector.yaml" "$vector_config" vector 0640 "${services[1]}"
@@ -756,6 +810,7 @@ settings=(
 )
 for plugin in "${zabbix_plugins[@]}"; do settings+=(--zabbix-plugin "$plugin"); done
 if ((passive)); then settings+=(--passive); fi
+if ((docker_monitoring)); then settings+=(--docker-monitoring); fi
 if ((!metrics)); then settings+=(--logs-only); fi
 if [[ -n $psk_source ]]; then settings+=(--psk-identity "$psk_identity" --psk-file "$psk_dest"); fi
 if ((vector_tls)); then settings+=(--vector-tls); fi

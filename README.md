@@ -62,6 +62,22 @@ Vector membaca journal secara default. Pilih preset di langkah 3 untuk file log 
 
 Vector perlu izin baca file dan akses lintas direktori. Berikan juga izin membaca daftar isi direktori jika memakai wildcard. Siapkan ACL untuk user `vector` atau tambahkan grup yang sudah diberi akses pada langkah 3. Periksa izin file baru setelah rotasi. Vector membaca file yang baru ditemukan dari awal dan melanjutkan file yang telah memiliki checkpoint dari posisi terakhir.
 
+## Preset Docker
+
+Pada host Rocky Linux yang menjalankan Docker Engine, pilih **ubah** di langkah 3 dan aktifkan **Preset Docker (metrik dan log)**. Dari CLI, gunakan `--configure-only --docker-monitoring` pada host yang pengaturannya sudah tersimpan, atau `--docker-monitoring` bersama opsi deployment awal.
+
+| Komponen | Data |
+| --- | --- |
+| Zabbix Agent 2 | Plugin Docker bawaan membaca Docker Engine API lokal. Zabbix dapat menampilkan status engine, discovery container, CPU, memori, dan metrik lainnya. |
+| Vector | Source `docker_logs` membaca stdout/stderr container melalui Docker Engine API, lalu meneruskan log dan metadata container ke Vector Aggregator. |
+
+Preset memerlukan Docker Engine yang sudah berjalan dengan socket lokal `/var/run/docker.sock` milik grup `docker`. Script menguji akses API dari akun kedua layanan sebelum mengubah konfigurasi. Saat preset aktif, systemd memberi grup `docker` kepada proses Agent 2 dan Vector. Akses socket tersebut setara dengan akses root pada host Docker. [Dokumentasi izin Docker](https://docs.docker.com/engine/install/linux-postinstall/)
+
+1. **Zabbix** · Hubungkan template **Docker by Zabbix agent 2** ke host yang dipantau dan pastikan passive checks bisa dijangkau oleh Zabbix Server atau Proxy. Di **Latest data**, nilai `docker.ping` yang sehat adalah `1`. [Integrasi Docker Zabbix](https://www.zabbix.com/integrations/docker)
+2. **Vector** · Cari log yang baru dihasilkan container di VictoriaLogs. Filter dengan `container_name` jika aggregator mempertahankan field itu. Pastikan logging driver container mendukung pembacaan lewat `docker logs`. [Source Docker Logs Vector](https://vector.dev/docs/reference/configuration/sources/docker_logs/)
+
+Untuk mematikan preset, pilih **nonaktifkan** pada langkah 3 atau gunakan `--configure-only --no-docker-monitoring`. Saat diterapkan, Script menonaktifkan source `docker_logs` dan mencabut grup Docker yang ditambahkan oleh preset dari konfigurasi kedua layanan.
+
 ## Verifikasi
 
 1. Periksa status layanan dari server agen.
