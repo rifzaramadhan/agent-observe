@@ -459,14 +459,34 @@ installed_version() {
         awk '$1 == "install" && $2 == "ok" && $3 == "installed" { print $4 }'
 }
 
+fetch_https() {
+    curl --proto '=https' --proto-redir '=https' \
+        --fail --silent --show-error --location \
+        --connect-timeout 5 --max-time 15 --output "$2" "$1"
+}
+
 check_https() {
     local label=$1 url=$2
     info "Mengecek koneksi HTTPS ke $label..."
-    if ! curl --proto '=https' --proto-redir '=https' \
-        --fail --silent --show-error --location \
-        --connect-timeout 5 --max-time 15 --output /dev/null "$url"; then
-        die "Tidak dapat mengakses $label ($url). Periksa DNS, proxy, firewall, dan sertifikat TLS."
+    if ! fetch_https "$url" /dev/null; then
+        die "Tidak dapat mengakses $label ($url). Periksa URL, DNS, proxy, firewall, dan sertifikat TLS."
     fi
+}
+
+check_vector_apt() {
+    local base=https://apt.vector.dev/dists/stable
+    local metadata=$work_dir/vector-apt-release file
+    info 'Mengecek metadata APT repositori Vector...'
+
+    # Repositori dapat memakai Release + Release.gpg atau InRelease.
+    # Verifikasi tanda tangan tetap dilakukan oleh apt-get update.
+    for file in Release InRelease; do
+        if fetch_https "$base/$file" "$metadata" 2>/dev/null &&
+            grep -Eq '^(SHA256|SHA512):[[:space:]]*$' "$metadata"; then
+            return 0
+        fi
+    done
+    die "Metadata APT Vector tidak tersedia atau tidak valid di $base/Release maupun $base/InRelease."
 }
 
 installed_zabbix=$(installed_version zabbix-agent2) || installed_zabbix=
@@ -505,7 +525,7 @@ if ((install_zabbix_packages)) || [[ -z $installed_vector ]]; then
             /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; then
             setup_vector_repo=1
         fi
-        check_https 'repositori Vector' 'https://apt.vector.dev/dists/stable/InRelease'
+        check_vector_apt
         if ((setup_vector_repo)); then check_https 'layanan setup Vector' "$vector_setup_url"; fi
     fi
     if ((install_zabbix_packages)); then
