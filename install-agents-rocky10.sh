@@ -622,6 +622,8 @@ YAML
           - "/run/user/*"
           - "/run/user/**/*"
           - "/run/media/**/*"
+          - "/var/lib/docker/rootfs/overlayfs/**/*"
+          - "/var/lib/docker/overlay2/*/merged"
 YAML
         inputs+=', host_metrics'
     fi
