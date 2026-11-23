@@ -619,8 +619,9 @@ YAML
     filesystem:
       mountpoints:
         excludes:
-          - "/run/user/*/gvfs"
-          - "/run/media/*/*"
+          - "/run/user/*"
+          - "/run/user/**/*"
+          - "/run/media/**/*"
 YAML
         inputs+=', host_metrics'
     fi
