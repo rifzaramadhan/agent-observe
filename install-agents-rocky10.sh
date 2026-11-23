@@ -595,6 +595,9 @@ else
     info "Versi journalctl tidak terdeteksi. Vector akan membaca journal dari boot saat ini."
 fi
 
+vector_scheme=http
+if ((vector_tls)); then vector_scheme=https; fi
+
 {
     printf '%s\n' "$marker"
     cat <<YAML
@@ -613,6 +616,10 @@ YAML
   host_metrics:
     type: host_metrics
     scrape_interval_secs: 30
+    filesystem:
+      mountpoints:
+        excludes:
+          - "/run/user/*/gvfs"
 YAML
         inputs+=', host_metrics'
     fi
@@ -636,7 +643,7 @@ sinks:
   victoria_aggregator:
     type: vector
     inputs: [$inputs]
-    address: "$vector_aggregator:$vector_port"
+    address: "$vector_scheme://$vector_aggregator:$vector_port"
     buffer:
       type: disk
       max_size: 536870912
