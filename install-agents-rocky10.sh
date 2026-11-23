@@ -31,6 +31,8 @@ Penggunaan:
   --docker-socket-group GRUP  Grup non-root pemilik socket Docker (default: docker).
   --app-logs nginx|apache   Tambahkan log access/error standar. Opsi dapat diulang.
   --app-log NAMA=POLA        Tambahkan file log aplikasi dari path absolut (* dan ? didukung).
+  --app-log-acl             Beri akun vector ACL untuk file log pilihan yang sudah ada.
+  --no-app-log-acl          Hentikan penerapan ACL pada eksekusi berikutnya.
   --app-log-group GRUP      Beri layanan Vector akses melalui grup Linux yang sudah ada. Opsi dapat diulang.
   --configure-only          Pakai pengaturan tersimpan tanpa instalasi paket. Letakkan sebagai opsi pertama.
   --active-only             Matikan passive checks Zabbix.
@@ -112,6 +114,7 @@ ca_source=
 app_services=()
 app_log_paths=()
 app_log_groups=()
+app_log_acl=0
 docker_monitoring=0
 docker_socket=/var/run/docker.sock
 docker_socket_group=docker
@@ -151,6 +154,8 @@ parse_args() {
             --docker-monitoring) docker_monitoring=1; shift ;;
             --no-docker-monitoring) docker_monitoring=0; shift ;;
             --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
+            --app-log-acl) app_log_acl=1; shift ;;
+            --no-app-log-acl) app_log_acl=0; shift ;;
             --clear-app-log-groups) app_log_groups=(); shift ;;
             --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group|--firewall-zone|--docker-socket-group)
                 (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
@@ -288,6 +293,8 @@ wizard_collect() {
                 wizard_args+=(--app-log "$wizard_reply")
             done
         fi
+        wizard_toggle 'ACL baca untuk akun vector pada file log pilihan' "$([[ $app_log_acl == 1 ]] && printf aktif || printf nonaktif)" \
+            --app-log-acl --no-app-log-acl
         wizard_choice 'Grup akses log: [t] tambah, [g] ganti, [h] kosongkan, [Enter] lewati: ' '^(t|g|h|s|skip)?$'
         case "$wizard_reply" in
             g|h) wizard_args+=(--clear-app-log-groups) ;;
@@ -342,6 +349,7 @@ wizard_confirm() {
     printf '  Passive checks: %s | TLS PSK: %s\n' "$([[ $passive == 1 ]] && printf aktif || printf nonaktif)" "$([[ -n $psk_source ]] && printf aktif || printf nonaktif)"
     printf '  Vector: %s:%s | TLS: %s | metrik host: %s\n' "$vector_aggregator" "$vector_port" "$([[ $vector_tls == 1 ]] && printf aktif || printf nonaktif)" "$([[ $metrics == 1 ]] && printf aktif || printf nonaktif)"
     printf '  File log aplikasi: %s\n' "${app_services[*]:-tidak ada}"
+    printf '  ACL baca log Vector: %s\n' "$([[ $app_log_acl == 1 ]] && printf aktif || printf nonaktif)"
     printf '  Grup log tambahan: %s\n' "${app_log_groups[*]:-tidak ada}"
     printf '  Plugin Zabbix: %s\n' "${zabbix_plugins[*]:-tidak ada}"
     if ((passive)); then
@@ -425,7 +433,7 @@ psk_dest=/etc/zabbix/victoria-agent.psk
 ca_dest=/etc/vector/victoria-agent-ca.pem
 marker='# Managed by install-agents-rocky10.sh'
 services=(zabbix-agent2.service vector.service)
-declare -a changed_files=()
+declare -a changed_files=() acl_backups=()
 declare -A previous_active=() previous_enabled=() restart_needed=()
 backup_dir=
 changing_services=0
@@ -451,6 +459,12 @@ finish() {
     trap - EXIT INT TERM
     set +e
     if ((status != 0)); then
+        for ((i=${#acl_backups[@]}-1; i>=0; i--)); do
+            if ! setfacl --restore="${acl_backups[i]}"; then
+                printf 'Gagal memulihkan ACL. Salinan ada di %s.\n' "${acl_backups[i]}" >&2
+                keep_work_dir=1
+            fi
+        done
         for entry in "${firewall_added[@]}"; do
             firewall_rule remove "$entry" >/dev/null || info "Gagal membatalkan aturan firewalld: $entry."
         done
@@ -486,7 +500,7 @@ finish() {
         done
     fi
     [[ -z $temp_install ]] || rm -f -- "$temp_install"
-    rm -rf -- "$work_dir"
+    if [[ ${keep_work_dir:-0} == 0 ]]; then rm -rf -- "$work_dir"; fi
     exit "$status"
 }
 trap finish EXIT
@@ -648,8 +662,18 @@ fi
 install_zabbix_packages=0
 if [[ -z $installed_series ]] || ((${#missing_plugins[@]})); then install_zabbix_packages=1; fi
 
-if ((install_zabbix_packages)) || ((install_vector)); then
+install_acl=0
+if ((app_log_acl && ${#app_log_paths[@]})) &&
+    { ! command -v getfacl >/dev/null || ! command -v setfacl >/dev/null; }; then
+    ((configure_only == 0)) || die "Paket acl diperlukan. Jalankan Script dalam mode interaktif untuk memasangnya."
+    install_acl=1
+fi
+
+if ((install_zabbix_packages || install_vector || install_acl)); then
     command -v curl >/dev/null || die "curl diperlukan untuk mengecek koneksi HTTPS sebelum instalasi."
+    if ((install_acl)); then
+        check_https 'Rocky Linux BaseOS' 'https://dl.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/repodata/repomd.xml'
+    fi
     if ((install_zabbix_packages)); then
         case "$zabbix_series" in
             8.0) zabbix_package_repo=https://repo.zabbix.com/zabbix/8.0/stable/rocky/10/x86_64 ;;
@@ -699,6 +723,11 @@ if ((install_vector)); then
         bash "$work_dir/setup-vector.sh"
     fi
     dnf -y install vector
+fi
+
+if ((install_acl)); then
+    info "Memasang paket acl untuk akses file log Vector."
+    dnf -y install acl
 fi
 
 for service in "${services[@]}"; do
@@ -880,6 +909,99 @@ put_file() {
     if [[ -n $service ]]; then restart_needed[$service]=1; fi
 }
 
+grant_vector_log_acl() {
+    local path=$1 permissions=$2 snapshot entry
+    snapshot="$work_dir/log-acl.${#acl_backups[@]}"
+    getfacl -pn -- "$path" > "$snapshot" || die "Gagal mencadangkan ACL: $path."
+
+    # Tambahkan bit yang diperlukan tanpa membuka izin yang sebelumnya tertutup oleh mask.
+    entry=$(awk -F: -v uid="$vector_acl_uid" -v required="$permissions" '
+        $1 == "user" && $2 == uid { user = substr($3, 1, 3) }
+        $1 == "mask" { mask = substr($3, 1, 3) }
+        $1 == "group" && $2 == "" { owner_group = substr($3, 1, 3) }
+        ($1 == "group") || ($1 == "user" && $2 != "" && $2 != uid) {
+            other[++count] = substr($3, 1, 3)
+        }
+        END {
+            if (mask == "") mask = owner_group
+            for (i = 1; i <= 3; i++) {
+                bit = substr(required, i, 1)
+                previous = substr(mask, i, 1)
+                if (bit != "-" && previous == "-") {
+                    for (j = 1; j <= count; j++) if (substr(other[j], i, 1) != "-") exit 1
+                }
+                new_mask = new_mask (bit == "-" ? previous : bit)
+                effective = substr(user, i, 1) == previous && previous != "-" ? previous : "-"
+                new_user = new_user (bit == "-" ? effective : bit)
+            }
+            print "u:" uid ":" new_user ",m::" new_mask
+        }
+    ' "$snapshot") || die "ACL untuk $path akan membuka izin lain yang tertutup mask. Tinjau getfacl $path atau gunakan grup log."
+    acl_backups+=("$snapshot")
+    setfacl -n -m "$entry" -- "$path" || die "Gagal memberi ACL baca ke akun vector: $path."
+}
+
+apply_vector_log_acls() {
+    local patterns pattern directory parent path wildcard
+    local -a parents matches
+    # Pisahkan pola dari file yang dicocokkannya tanpa word splitting.
+    local IFS=
+    local vector_acl_uid
+    vector_acl_uid=$(id -u vector) || die "Akun Vector tidak ditemukan."
+    info "Memeriksa akses akun vector ke file log pilihan."
+    for patterns in "${app_log_paths[@]}"; do
+        while IFS= read -r pattern; do
+            directory=$(dirname -- "$pattern")
+            if [[ $directory == *[*?]* ]]; then
+                info "ACL dilewati: wildcard hanya didukung pada nama file ($pattern)."
+                continue
+            fi
+            wildcard=0
+            matches=("$pattern")
+            if [[ $pattern == *[*?]* ]]; then
+                wildcard=1
+                matches=()
+                while IFS= read -r -d '' path; do
+                    matches+=("$path")
+                done < <(shopt -s nullglob; for path in $pattern; do printf '%s\0' "$path"; done)
+            fi
+            if [[ ! -d $directory ]] || [[ $(realpath -e -- "$directory") != "$(realpath -ms -- "$directory")" ]]; then
+                info "ACL dilewati: direktori belum ada atau melewati symlink ($directory)."
+                continue
+            fi
+            if ((${#matches[@]} == 0)); then
+                info "Belum ada file yang cocok untuk ACL: $pattern."
+                continue
+            fi
+            directory=$(realpath -e -- "$directory")
+            parents=()
+            parent=$directory
+            while [[ $parent != / ]]; do
+                parents=("$parent" "${parents[@]}")
+                parent=$(dirname -- "$parent")
+            done
+            for path in "${parents[@]}"; do
+                if ! runuser -u vector -- test -x "$path"; then grant_vector_log_acl "$path" --x; fi
+            done
+            if ((wildcard)) && ! runuser -u vector -- test -r "$directory"; then
+                grant_vector_log_acl "$directory" r-x
+            fi
+            for path in "${matches[@]}"; do
+                if [[ -L $path || ! -f $path ]]; then
+                    info "ACL dilewati: file reguler belum tersedia atau merupakan symlink ($path)."
+                    continue
+                fi
+                if ! runuser -u vector -- test -r "$path"; then
+                    grant_vector_log_acl "$path" r--
+                fi
+                runuser -u vector -- test -r "$path" || die "Akun vector masih tidak dapat membaca $path setelah ACL diterapkan."
+            done
+        done <<< "$patterns"
+    done
+}
+
+if ((app_log_acl && ${#app_log_paths[@]})); then apply_vector_log_acls; fi
+
 info "Memasang dan memvalidasi konfigurasi agen."
 if [[ -n $psk_source ]]; then
     printf '%s\n' "$psk_value" > "$work_dir/zabbix.psk"
@@ -952,6 +1074,7 @@ if [[ $firewall_zone != auto ]]; then settings+=(--firewall-zone "$firewall_zone
 if ((docker_monitoring)); then settings+=(--docker-monitoring); fi
 if [[ $docker_socket_group != docker ]]; then settings+=(--docker-socket-group "$docker_socket_group"); fi
 if ((!metrics)); then settings+=(--logs-only); fi
+if ((app_log_acl)); then settings+=(--app-log-acl); fi
 if [[ -n $psk_source ]]; then settings+=(--psk-identity "$psk_identity" --psk-file "$psk_dest"); fi
 if ((vector_tls)); then settings+=(--vector-tls); fi
 if [[ -n $ca_source ]]; then settings+=(--vector-ca "$ca_dest"); fi
