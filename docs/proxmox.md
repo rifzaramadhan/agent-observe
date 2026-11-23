@@ -33,9 +33,9 @@ Pilih **`u`** untuk mengubah langkah, atau tekan **Enter** maupun **`s`** untuk 
 | 3. File log aplikasi | Preset Proxmox, Nginx, Apache, atau file khusus beserta grup akses |
 | 4. Plugin Zabbix Agent 2 | Tambah, ganti, atau berhenti memuat plugin. Masukkan nama seperti `postgresql mongodb mssql` dan sesuaikan template, macro, serta akses target di Zabbix. |
 | 5. TLS | Identitas dan file PSK Zabbix, serta TLS Vector dengan CA sistem atau file CA |
-| 6. Konfigurasi milik deployment lain | Izin mengganti konfigurasi yang dikelola di luar skrip |
+| 6. Konfigurasi milik deployment lain | Izin mengganti konfigurasi yang dikelola di luar Script |
 
-Tinjau ringkasan dan ketik **`y`** untuk menerapkan, atau tekan Enter untuk membatalkan. Skrip memeriksa HTTPS dan memasang paket jika diperlukan. Secara default Zabbix memakai `10.7.146.72:10051` dan Vector memakai `10.7.146.73:6000`. Gunakan endpoint sesuai jaringan Anda.
+Tinjau ringkasan dan ketik **`y`** untuk menerapkan, atau tekan Enter untuk membatalkan. Script memeriksa HTTPS dan memasang paket jika diperlukan. Secara default Zabbix memakai `10.7.146.72:10051` dan Vector memakai `10.7.146.73:6000`. Gunakan endpoint sesuai jaringan Anda.
 
 Vector mengirim journal sistem dan layanan seperti `pvedaemon`, `pveproxy`, dan `corosync` bila tercatat di journal. Metrik host aktif secara default dan bisa dinonaktifkan di langkah 2. Koneksi default menggunakan plaintext. Siapkan pengaturan TLS pada Zabbix Server dan Vector Aggregator sebelum mengaktifkannya pada agen. [Daftar plugin Zabbix](https://www.zabbix.com/documentation/current/en/manual/concepts/agent2/loadable_plugins)
 
@@ -75,6 +75,6 @@ logger -t pve-vector-test "pve-vector-test $(hostname) $(date -Is)"
 
 ## 5. Ubah konfigurasi setelah instalasi
 
-Jalankan kembali `bash install-agents-proxmox.sh`. Panduan memuat pengaturan tersimpan dan memakai ulang nilai untuk setiap langkah yang dilewati. Skrip mencatat pengaturan di `/etc/agent-observe.args` dan menyimpan cadangan file konfigurasi yang diganti di `/var/backups/victoria-agents/`.
+Jalankan kembali `bash install-agents-proxmox.sh`. Panduan memuat pengaturan tersimpan dan memakai ulang nilai untuk setiap langkah yang dilewati. Script mencatat pengaturan di `/etc/agent-observe.args` dan menyimpan cadangan file konfigurasi yang diganti di `/var/backups/victoria-agents/`.
 
 Jika sebelumnya memakai rsyslog dari Proxmox ke listener Rocky Linux, hentikan forwarding lama setelah alur langsung dari Vector terverifikasi. Untuk receiver Rocky Linux dengan konfigurasi listener lama, terapkan ulang installer Rocky terbaru dengan opsi deployment yang berlaku. Daftar opsi tersedia melalui `--help`.

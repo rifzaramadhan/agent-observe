@@ -1,18 +1,18 @@
 # Agent Observe
 
-Instalasi Zabbix Agent 2 dan Vector Agent untuk **Rocky Linux 10 x86_64**. Skrip memasang paket RPM yang belum tersedia, menyiapkan konfigurasi, memvalidasinya, lalu mengaktifkan layanan melalui systemd.
+Instalasi Zabbix Agent 2 dan Vector Agent untuk **Rocky Linux 10 x86_64**. Script memasang paket RPM yang belum tersedia, menyiapkan konfigurasi, memvalidasinya, lalu mengaktifkan layanan melalui systemd.
 
 Untuk node **Proxmox VE**, gunakan [installer Proxmox VE](./install-agents-proxmox.sh) dan [panduan langkah demi langkah](./docs/proxmox.md). Vector pada node Proxmox mengirim log langsung ke aggregator.
 
 ## Prasyarat
 
 - Jalankan di server Rocky Linux 10 x86_64 yang akan dipantau. Siapkan akses `sudo` atau root dan pastikan systemd berjalan.
-- Untuk instalasi paket, server memerlukan `curl` dan akses HTTPS ke repositori paket. Jika kedua paket sudah terpasang, skrip melewati pengecekan internet dan langsung melanjutkan konfigurasi.
+- Untuk instalasi paket, server memerlukan `curl` dan akses HTTPS ke repositori paket. Jika kedua paket sudah terpasang, Script melewati pengecekan internet dan langsung melanjutkan konfigurasi.
 - Pastikan Zabbix Server atau Proxy menerima **active checks** dan Vector Aggregator memiliki listener **Vector native** yang bisa dijangkau dari server agen.
 
 ## Instalasi dan konfigurasi interaktif
 
-Jalankan di server Rocky Linux yang akan dipantau. Jika Anda sudah mengunduh skrip, buka direktori unduhan lalu jalankan perintah `sudo bash` di bawah.
+Jalankan di server Rocky Linux yang akan dipantau. Jika Anda sudah mengunduh Script, buka direktori unduhan lalu jalankan perintah `sudo bash` di bawah.
 
 ```bash
 git clone https://github.com/rifzaramadhan/agent-observe.git
@@ -29,9 +29,9 @@ Di setiap langkah, pilih **`u`** untuk mengubah, atau tekan **Enter** maupun **`
 | 3. File log aplikasi | Preset Nginx atau Apache, path khusus, dan grup akses |
 | 4. Plugin Zabbix Agent 2 | Tambah, ganti, atau berhenti memuat plugin |
 | 5. TLS | Identitas dan file PSK Zabbix, serta TLS Vector dengan CA sistem atau file CA |
-| 6. Konfigurasi milik deployment lain | Izin mengganti konfigurasi yang dikelola di luar skrip |
+| 6. Konfigurasi milik deployment lain | Izin mengganti konfigurasi yang dikelola di luar Script |
 
-Tinjau ringkasan lalu ketik **`y`** untuk menerapkan. Tekan Enter pada ringkasan untuk membatalkan. Skrip mengecek HTTPS ke repositori jika ada paket yang perlu dipasang. Bila semua paket sudah tersedia, konfigurasi dapat diterapkan tanpa internet.
+Tinjau ringkasan lalu ketik **`y`** untuk menerapkan. Tekan Enter pada ringkasan untuk membatalkan. Script mengecek HTTPS ke repositori jika ada paket yang perlu dipasang. Bila semua paket sudah tersedia, konfigurasi dapat diterapkan tanpa internet.
 
 | Komponen | Pengaturan default |
 | --- | --- |
@@ -42,13 +42,13 @@ Koneksi default menggunakan plaintext. Untuk TLS, atur identitas dan kunci PSK y
 
 ## Ubah konfigurasi setelah instalasi
 
-Jalankan kembali skrip dengan cara yang sama. Pengaturan dari deployment sebelumnya dimuat dari `/etc/agent-observe.args`. Ubah langkah yang diperlukan lalu lewati langkah lainnya. Jika instalasi lama belum memiliki pengaturan tersimpan, isi pengaturan deployment yang berlaku saat pertama kali menjalankan panduan.
+Jalankan kembali Script dengan cara yang sama. Pengaturan dari deployment sebelumnya dimuat dari `/etc/agent-observe.args`. Ubah langkah yang diperlukan lalu lewati langkah lainnya. Jika instalasi lama belum memiliki pengaturan tersimpan, isi pengaturan deployment yang berlaku saat pertama kali menjalankan panduan.
 
 Untuk integrasi otomasi, opsi CLI masih tersedia melalui `bash install-agents-rocky10.sh --help`.
 
 ## Plugin Zabbix Agent 2
 
-Pada langkah 4, pilih **tambah** lalu masukkan nama seperti `postgresql mongodb`. Paket harus tersedia untuk seri dan platform yang digunakan. Skrip menambahkan file konfigurasi paket ke `Include`. Pilihan **berhenti memuat** mengeluarkan plugin dari konfigurasi Agent 2 dan paketnya tetap terpasang. Sesuaikan template Zabbix, macro, dan akses database untuk plugin yang dipilih. [Daftar plugin Zabbix](https://www.zabbix.com/documentation/current/en/manual/concepts/agent2/loadable_plugins)
+Pada langkah 4, pilih **tambah** lalu masukkan nama seperti `postgresql mongodb`. Paket harus tersedia untuk seri dan platform yang digunakan. Script menambahkan file konfigurasi paket ke `Include`. Pilihan **berhenti memuat** mengeluarkan plugin dari konfigurasi Agent 2 dan paketnya tetap terpasang. Sesuaikan template Zabbix, macro, dan akses database untuk plugin yang dipilih. [Daftar plugin Zabbix](https://www.zabbix.com/documentation/current/en/manual/concepts/agent2/loadable_plugins)
 
 ## Log aplikasi
 
@@ -70,7 +70,7 @@ Vector perlu izin baca file dan akses lintas direktori. Berikan juga izin membac
    sudo systemctl is-active zabbix-agent2 vector
    ```
 
-2. Di Zabbix, pastikan **Host name** sama persis dengan hostname yang dicetak skrip. Pasang template Linux dengan active checks, lalu buka **Monitoring → Latest data** untuk memastikan data masuk.
+2. Di Zabbix, pastikan **Host name** sama persis dengan hostname yang dicetak Script. Pasang template Linux dengan active checks, lalu buka **Monitoring → Latest data** untuk memastikan data masuk.
 3. Kirim log uji dari server agen dan cari teks `agent-observe-test` di Grafana menggunakan datasource VictoriaLogs.
 
    ```bash

@@ -39,7 +39,7 @@ Penggunaan:
   --replace-config          Izinkan mengganti konfigurasi agen milik deployment lain
   -h, --help                Tampilkan opsi
 
-Sebelum memasang paket, skrip mengecek akses HTTPS ke repositori yang diperlukan.
+Sebelum memasang paket, Script mengecek akses HTTPS ke repositori yang diperlukan.
 Jalankan pada server yang dipantau. Gunakan endpoint yang sesuai dengan
 konfigurasi server pusat. Tanpa opsi TLS/PSK, koneksi menggunakan plaintext.
 Vector menggunakan nama OS yang tercatat pada journal dan host metrics.
@@ -66,10 +66,10 @@ if ((interactive)); then
     [[ -t 0 && -t 1 ]] || die 'Mode interaktif memerlukan terminal. Gunakan opsi CLI eksplisit untuk otomasi.'
 fi
 
-((EUID == 0)) || die "Jalankan skrip menggunakan sudo."
+((EUID == 0)) || die "Jalankan Script menggunakan sudo."
 source /etc/os-release
-[[ $ID == rocky && ${VERSION_ID%%.*} == 10 ]] || die "Skrip ini ditujukan untuk Rocky Linux 10."
-[[ $(uname -m) == x86_64 ]] || die "Skrip ini ditujukan untuk x86_64."
+[[ $ID == rocky && ${VERSION_ID%%.*} == 10 ]] || die "Script ini ditujukan untuk Rocky Linux 10."
+[[ $(uname -m) == x86_64 ]] || die "Script ini ditujukan untuk x86_64."
 [[ -d /run/systemd/system ]] || die "Systemd harus berjalan."
 
 exec 9>/run/lock/victoria-install-agents.lock
@@ -84,7 +84,7 @@ if [[ -e $state_file || -L $state_file ]]; then
     [[ ${saved_args[0]:-} == "$state_header" && ${#saved_args[@]} -gt 1 ]] ||
         die "Format pengaturan tidak dikenali: $state_file."
 elif ((configure_only || install_plugins_only)); then
-    die "Pengaturan belum tersimpan. Jalankan versi skrip ini sekali dengan semua opsi deployment yang berlaku."
+    die "Pengaturan belum tersimpan. Jalankan versi Script ini sekali dengan semua opsi deployment yang berlaku."
 fi
 if ((configure_only || install_plugins_only || interactive)) && [[ -f $state_file ]]; then
     set -- "${saved_args[@]:1}" "$@"
@@ -222,7 +222,7 @@ wizard_collect() {
     wizard_args=()
     info "Agent Observe | Panduan instalasi dan konfigurasi"
     info "Lewati langkah opsional untuk memakai nilai tersimpan atau default."
-    info "Skrip menerapkan perubahan hanya setelah Anda mengonfirmasi ringkasan."
+    info "Script menerapkan perubahan hanya setelah Anda mengonfirmasi ringkasan."
 
     if wizard_step '1/6 Zabbix Agent 2'; then
         wizard_value 'Zabbix Server atau Proxy' "$zabbix_server" --zabbix-server
@@ -305,7 +305,7 @@ wizard_collect() {
     fi
 
     if wizard_step '6/6 Konfigurasi milik deployment lain'; then
-        wizard_choice 'Izinkan penggantian konfigurasi yang tidak dikelola skrip? [y/N]: ' '^(y|n|s|skip)?$'
+        wizard_choice 'Izinkan penggantian konfigurasi yang tidak dikelola Script? [y/N]: ' '^(y|n|s|skip)?$'
         if [[ $wizard_reply == y ]]; then wizard_args+=(--replace-config); fi
     fi
     parse_args "${wizard_args[@]}"
