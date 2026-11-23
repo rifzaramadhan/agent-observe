@@ -28,6 +28,7 @@ Penggunaan:
   --logs-only               Kirim log journald dan log aplikasi yang dipilih, tanpa host metrics.
   --docker-monitoring       Aktifkan preset metrik dan log Docker. Layanan diberi akses socket Docker.
   --no-docker-monitoring    Nonaktifkan preset Docker.
+  --docker-socket-group GRUP  Grup non-root pemilik socket Docker (default: docker).
   --app-logs nginx|apache   Tambahkan log access/error standar. Opsi dapat diulang.
   --app-log NAMA=POLA        Tambahkan file log aplikasi dari path absolut (* dan ? didukung).
   --app-log-group GRUP      Beri layanan Vector akses melalui grup Linux yang sudah ada. Opsi dapat diulang.
@@ -113,6 +114,7 @@ app_log_paths=()
 app_log_groups=()
 docker_monitoring=0
 docker_socket=/var/run/docker.sock
+docker_socket_group=docker
 app_name_pattern='^[a-z][a-z0-9_]{0,47}$'
 app_path_pattern='^/[A-Za-z0-9_./*?@-]+$'
 app_group_pattern='^[A-Za-z_][A-Za-z0-9_.-]*$'
@@ -150,7 +152,7 @@ parse_args() {
             --no-docker-monitoring) docker_monitoring=0; shift ;;
             --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
             --clear-app-log-groups) app_log_groups=(); shift ;;
-            --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group|--firewall-zone)
+            --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group|--firewall-zone|--docker-socket-group)
                 (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
                 case "$1" in
                     --hostname) agent_hostname=$2 ;;
@@ -166,6 +168,9 @@ parse_args() {
                         if [[ " ${zabbix_plugins[*]} " != *" $2 "* ]]; then zabbix_plugins+=("$2"); fi ;;
                     --psk-identity) psk_identity=$2 ;;
                     --psk-file) psk_source=$2 ;;
+                    --docker-socket-group)
+                        [[ $2 =~ $app_group_pattern ]] || die "Nama grup socket Docker tidak valid: $2."
+                        docker_socket_group=$2 ;;
                     --vector-aggregator) vector_aggregator=$2 ;;
                     --vector-port) vector_port=$2 ;;
                     --vector-ca) ca_source=$2; vector_tls=1 ;;
@@ -256,6 +261,9 @@ wizard_collect() {
         info "Preset Docker memberi Agent 2 dan Vector akses ke socket Docker. Akses ini setara dengan hak root."
         wizard_toggle 'Preset Docker (metrik dan log)' "$([[ $docker_monitoring == 1 ]] && printf aktif || printf nonaktif)" \
             --docker-monitoring --no-docker-monitoring
+        if [[ $wizard_reply == y || ( $wizard_reply != n && $docker_monitoring == 1 ) ]]; then
+            wizard_value 'Grup pemilik socket Docker (non-root)' "$docker_socket_group" --docker-socket-group
+        fi
         wizard_choice 'File log: [t] tambah, [g] ganti, [h] hapus dari koleksi, [Enter] lewati: ' '^(t|g|h|s|skip)?$'
         case "$wizard_reply" in
             g|h) wizard_args+=(--clear-app-logs) ;;
@@ -340,6 +348,7 @@ wizard_confirm() {
         printf '  Firewalld: izinkan TCP 10050 hanya dari %s, zona %s\n' "$zabbix_server" "$firewall_zone"
     fi
     printf '  Preset Docker: %s\n' "$([[ $docker_monitoring == 1 ]] && printf aktif || printf nonaktif)"
+    if ((docker_monitoring)); then printf '  Grup socket Docker: %s\n' "$docker_socket_group"; fi
     if ((replace)); then info "  Penggantian konfigurasi deployment lain diizinkan."; fi
     wizard_choice 'Instal paket yang diperlukan dan terapkan konfigurasi? [y/N]: ' '^(y|n|s|skip)?$'
     if [[ $wizard_reply != y ]]; then
@@ -391,13 +400,21 @@ if ((interactive)); then wizard_confirm; fi
 
 if ((docker_monitoring)); then
     [[ -S $docker_socket ]] || die "Socket Docker belum tersedia: $docker_socket. Pastikan Docker Engine aktif."
-    docker_owner=$(stat -Lc '%G:%g' -- "$docker_socket") || die "Gagal memeriksa grup socket Docker."
-    [[ $docker_owner =~ ^docker:[1-9][0-9]*$ ]] || die "Preset Docker memerlukan socket dengan grup docker non-root: $docker_socket."
+    docker_owner=$(stat -Lc '%U:%G:%g:%a' -- "$docker_socket") || die "Gagal memeriksa owner, grup, dan mode socket Docker."
+    IFS=: read -r socket_user socket_group socket_gid socket_mode <<< "$docker_owner"
+    socket_details="$docker_socket (owner $socket_user, grup $socket_group, GID $socket_gid, mode $socket_mode)"
+    [[ $socket_gid =~ ^[1-9][0-9]*$ ]] ||
+        die "Socket Docker memakai grup root: $socket_details. Atur grup non-root pada layanan pembuat socket sebelum menjalankan ulang."
+    group_record=$(getent group "$docker_socket_group") ||
+        die "Grup $docker_socket_group tidak ditemukan. Socket saat ini: $socket_details."
+    IFS=: read -r _ _ docker_gid _ <<< "$group_record"
+    [[ $docker_gid == "$socket_gid" ]] ||
+        die "Grup yang dipilih ($docker_socket_group) berbeda dari grup socket Docker: $socket_details. Pilih grup pemilik socket pada langkah 3."
     command -v curl >/dev/null || die "curl diperlukan untuk memeriksa akses API Docker."
 fi
 vector_service_groups=$vector_groups
-if ((docker_monitoring)) && [[ " $vector_service_groups " != *" docker "* ]]; then
-    vector_service_groups+=" docker"
+if ((docker_monitoring)) && [[ " $vector_service_groups " != *" $docker_socket_group "* ]]; then
+    vector_service_groups+=" $docker_socket_group"
 fi
 
 zbx_config=/etc/zabbix/zabbix_agent2.conf
@@ -697,7 +714,7 @@ install -d -m 0750 -o vector -g vector /var/lib/vector
 if ((docker_monitoring)); then
     info "Menguji akses Docker untuk Zabbix Agent 2 dan Vector."
     for account in zabbix vector; do
-        runuser -u "$account" -g "$account" -G docker -- \
+        runuser -u "$account" -g "$account" -G "$docker_socket_group" -- \
             curl -q --fail --silent --show-error --max-time 5 --noproxy '*' \
             --unix-socket "$docker_socket" http://localhost/_ping >/dev/null ||
             die "User $account tidak dapat mengakses API Docker melalui $docker_socket."
@@ -871,7 +888,7 @@ fi
 if ((manage_zbx_docker_dropin)); then
     {
         printf '%s\n[Service]\n' "$marker"
-        if ((docker_monitoring)); then printf '%s\n' 'SupplementaryGroups=docker'; fi
+        if ((docker_monitoring)); then printf 'SupplementaryGroups=%s\n' "$docker_socket_group"; fi
     } > "$work_dir/zabbix-docker.conf"
     put_file "$work_dir/zabbix-docker.conf" "$zbx_docker_dropin" root 0644 "${services[0]}"
 fi
@@ -929,6 +946,7 @@ for plugin in "${zabbix_plugins[@]}"; do settings+=(--zabbix-plugin "$plugin"); 
 if ((passive)); then settings+=(--passive); fi
 if [[ $firewall_zone != auto ]]; then settings+=(--firewall-zone "$firewall_zone"); fi
 if ((docker_monitoring)); then settings+=(--docker-monitoring); fi
+if [[ $docker_socket_group != docker ]]; then settings+=(--docker-socket-group "$docker_socket_group"); fi
 if ((!metrics)); then settings+=(--logs-only); fi
 if [[ -n $psk_source ]]; then settings+=(--psk-identity "$psk_identity" --psk-file "$psk_dest"); fi
 if ((vector_tls)); then settings+=(--vector-tls); fi
