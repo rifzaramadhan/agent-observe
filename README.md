@@ -26,7 +26,7 @@ Di setiap langkah, pilih **`u`** untuk mengubah, atau tekan **Enter** maupun **`
 | --- | --- |
 | 1. Zabbix Agent 2 | Server atau Proxy, port active checks, nama host, seri paket 8.0 atau 7.0, dan passive checks |
 | 2. Vector Agent | Aggregator, port Vector native, dan pengiriman metrik host |
-| 3. File log aplikasi | Preset Nginx atau Apache, path khusus, dan grup akses |
+| 3. File log aplikasi | Preset Nginx atau Apache, path khusus, ACL baca Vector, dan grup akses |
 | 4. Plugin Zabbix Agent 2 | Tambah, ganti, atau berhenti memuat plugin |
 | 5. TLS | Identitas dan file PSK Zabbix, serta TLS Vector dengan CA sistem atau file CA |
 | 6. Konfigurasi milik deployment lain | Izin mengganti konfigurasi yang dikelola di luar Script |
@@ -68,7 +68,9 @@ Vector membaca journal secara default. Pilih preset di langkah 3 untuk file log 
 | `apache` | `/var/log/httpd/access_log`, `/var/log/httpd/error_log` |
 | Log khusus | Masukkan `my_app=/var/log/my-app/*.log` ketika diminta. Ulangi untuk menambah file lain. |
 
-Vector perlu izin baca file dan akses lintas direktori. Berikan juga izin membaca daftar isi direktori jika memakai wildcard. Siapkan ACL untuk user `vector` atau tambahkan grup yang sudah diberi akses pada langkah 3. Periksa izin file baru setelah rotasi. Vector membaca file yang baru ditemukan dari awal dan melanjutkan file yang telah memiliki checkpoint dari posisi terakhir.
+Di Rocky Linux, pilih **ubah** pada langkah 3 lalu aktifkan **ACL baca untuk akun vector pada file log pilihan**. Script menginstal paket `acl` bila diperlukan, memberi akun `vector` akses lintas direktori dan izin baca file, lalu menguji file yang dapat dijangkau. Untuk pola seperti `/var/log/nginx/*.log`, Script juga memberi izin membaca daftar isi direktori. ACL mendukung wildcard pada nama file dan melewati symlink. Grup akses log masih bisa dipakai melalui langkah 3.
+
+ACL ini diterapkan pada file yang tersedia saat Script berjalan. Setelah logrotate membuat file baru, jalankan kembali Script atau atur akses file baru melalui grup yang sesuai pada konfigurasi logrotate. Menonaktifkan opsi ACL menghentikan penerapan selanjutnya. Entri yang sudah ditulis tetap ada sampai dihapus oleh administrator. Vector membaca file yang baru ditemukan dari awal dan melanjutkan file yang telah memiliki checkpoint dari posisi terakhir.
 
 ## Preset Docker
 
