@@ -33,6 +33,7 @@ Penggunaan:
   --app-log-group GRUP      Beri layanan Vector akses melalui grup Linux yang sudah ada. Opsi dapat diulang.
   --configure-only          Pakai pengaturan tersimpan tanpa instalasi paket. Letakkan sebagai opsi pertama.
   --active-only             Matikan passive checks Zabbix.
+  --firewall-zone ZONA      Ganti zona firewalld otomatis untuk passive checks. Gunakan auto untuk kembali otomatis.
   --zabbix-no-psk           Nonaktifkan TLS PSK Zabbix.
   --vector-no-tls           Nonaktifkan TLS Vector dan hapus referensi CA dari konfigurasi.
   --host-metrics            Aktifkan kembali pengiriman metrik host.
@@ -94,6 +95,7 @@ fi
 
 zabbix_server=10.7.146.72
 zabbix_port=10051
+firewall_zone=auto
 zabbix_series=8.0
 zabbix_plugins=()
 vector_aggregator=10.7.146.73
@@ -148,12 +150,15 @@ parse_args() {
             --no-docker-monitoring) docker_monitoring=0; shift ;;
             --clear-app-logs) app_services=(); app_log_paths=(); shift ;;
             --clear-app-log-groups) app_log_groups=(); shift ;;
-            --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group)
+            --hostname|--zabbix-server|--zabbix-port|--zabbix-series|--zabbix-plugin|--psk-identity|--psk-file|--vector-aggregator|--vector-port|--vector-ca|--app-logs|--app-log|--app-log-group|--firewall-zone)
                 (($# >= 2)) && [[ -n $2 && $2 != --* ]] || die "Nilai diperlukan untuk $1."
                 case "$1" in
                     --hostname) agent_hostname=$2 ;;
                     --zabbix-server) zabbix_server=$2 ;;
                     --zabbix-port) zabbix_port=$2 ;;
+                    --firewall-zone)
+                        [[ $2 =~ ^[A-Za-z0-9_.-]+$ ]] || die "Nama zona firewalld tidak valid: $2."
+                        firewall_zone=$2 ;;
                     --zabbix-series) zabbix_series=$2 ;;
                     --zabbix-plugin)
                         [[ $2 =~ ^[a-z][a-z0-9-]{0,39}$ ]] ||
@@ -236,6 +241,9 @@ wizard_collect() {
         wizard_value 'Nama host Zabbix' "${agent_hostname:-$(hostname)}" --hostname
         wizard_value 'Seri Agent 2 (8.0 atau 7.0)' "$zabbix_series" --zabbix-series
         wizard_toggle 'Passive checks' "$([[ $passive == 1 ]] && printf aktif || printf nonaktif)" --passive --active-only
+        if [[ $wizard_reply == y || ( $wizard_reply != n && $passive == 1 ) ]]; then
+            wizard_value 'Zona firewalld untuk TCP 10050 (auto mengikuti rute ke Zabbix)' "$firewall_zone" --firewall-zone
+        fi
     fi
 
     if wizard_step '2/6 Vector Agent dan metrik host'; then
@@ -328,6 +336,9 @@ wizard_confirm() {
     printf '  File log aplikasi: %s\n' "${app_services[*]:-tidak ada}"
     printf '  Grup log tambahan: %s\n' "${app_log_groups[*]:-tidak ada}"
     printf '  Plugin Zabbix: %s\n' "${zabbix_plugins[*]:-tidak ada}"
+    if ((passive)); then
+        printf '  Firewalld: izinkan TCP 10050 hanya dari %s, zona %s\n' "$zabbix_server" "$firewall_zone"
+    fi
     printf '  Preset Docker: %s\n' "$([[ $docker_monitoring == 1 ]] && printf aktif || printf nonaktif)"
     if ((replace)); then info "  Penggantian konfigurasi deployment lain diizinkan."; fi
     wizard_choice 'Instal paket yang diperlukan dan terapkan konfigurasi? [y/N]: ' '^(y|n|s|skip)?$'
@@ -403,11 +414,33 @@ backup_dir=
 changing_services=0
 temp_install=
 work_dir=$(mktemp -d /var/tmp/victoria-agents.XXXXXXXX)
+firewall_state=/etc/agent-observe.firewalld
+firewall_enabled=0
+declare -a firewall_existing=() firewall_desired=() firewall_added=() firewall_removed=()
+declare -a firewall_managed=()
+
+firewall_rule() {
+    local operation=$1 scope zone family cidr rule
+    local -a args=()
+    IFS='|' read -r scope zone family cidr <<< "$2"
+    [[ $scope == runtime || $scope == permanent ]] || die "Scope firewalld tidak valid."
+    if [[ $scope == permanent ]]; then args+=(--permanent); fi
+    rule="rule family=\"$family\" source address=\"$cidr\" port port=\"10050\" protocol=\"tcp\" accept"
+    firewall-cmd "${args[@]}" --zone="$zone" "--${operation}-rich-rule=$rule"
+}
 
 finish() {
-    local status=$? path service i
+    local status=$? path service entry i
     trap - EXIT INT TERM
     set +e
+    if ((status != 0)); then
+        for entry in "${firewall_added[@]}"; do
+            firewall_rule remove "$entry" >/dev/null || info "Gagal membatalkan aturan firewalld: $entry."
+        done
+        for entry in "${firewall_removed[@]}"; do
+            firewall_rule add "$entry" >/dev/null || info "Gagal memulihkan aturan firewalld: $entry."
+        done
+    fi
     if ((status != 0 && ${#changed_files[@]} > 0)); then
         info "Terjadi kegagalan. Memulihkan konfigurasi sebelumnya."
         for ((i=${#changed_files[@]}-1; i>=0; i--)); do
@@ -442,6 +475,88 @@ finish() {
 trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+prepare_passive_firewall() {
+    local addresses address family cidr route device zone scope entry
+    if ((!passive)) && [[ ! -e $firewall_state && ! -L $firewall_state ]]; then return 0; fi
+    if ! command -v firewall-cmd >/dev/null || ! firewall-cmd --state >/dev/null 2>&1; then
+        if ((passive)); then info "Firewalld tidak aktif. Atur akses TCP 10050 dari Zabbix Server atau Proxy pada firewall yang digunakan."; fi
+        return 0
+    fi
+    firewall_enabled=1
+
+    if [[ -e $firewall_state || -L $firewall_state ]]; then
+        [[ -f $firewall_state && ! -L $firewall_state && $(stat -c '%u:%g:%a' -- "$firewall_state") == 0:0:600 ]] ||
+            die "File aturan firewalld harus milik root:root dengan mode 0600: $firewall_state."
+        while IFS= read -r entry; do
+            [[ $entry =~ ^(runtime|permanent)\|[A-Za-z0-9_.-]+\|ipv[46]\|[[:xdigit:]:.]+/(32|128)$ ]] ||
+                die "Isi file aturan firewalld tidak valid: $firewall_state."
+            firewall_existing+=("$entry")
+        done < "$firewall_state"
+    fi
+    if ((!passive)); then return 0; fi
+
+    addresses=$(getent ahosts "$zabbix_server" | awk '$2 == "STREAM" && !seen[$1]++ { print $1 }') ||
+        die "Gagal meresolusi IP Zabbix Server atau Proxy: $zabbix_server."
+    [[ -n $addresses ]] || die "Alamat IP Zabbix Server atau Proxy tidak ditemukan: $zabbix_server."
+    while IFS= read -r address; do
+        [[ $address =~ ^[[:xdigit:]:.]+$ ]] || die "Alamat sumber firewalld tidak didukung: $address."
+        if [[ $address == *:* ]]; then
+            family=ipv6
+            cidr="$address/128"
+        else
+            family=ipv4
+            cidr="$address/32"
+        fi
+        zone=$firewall_zone
+        if [[ $zone == auto ]]; then
+            route=$(ip route get "$address") || die "Rute menuju $address tidak ditemukan. Tentukan --firewall-zone bila perlu."
+            device=$(awk '{ for (i=1; i<NF; i++) if ($i=="dev") { print $(i+1); exit } }' <<< "$route")
+            [[ -n $device ]] || die "Interface menuju $address tidak ditemukan. Tentukan --firewall-zone."
+            # Local monitoring uses the loopback accept rule already managed by firewalld.
+            if [[ $device == lo ]]; then continue; fi
+            zone=$(firewall-cmd --get-zone-of-interface="$device" 2>/dev/null) || zone=
+            if [[ -z $zone || $zone == 'no zone' ]]; then
+                zone=$(firewall-cmd --get-default-zone) || die "Zona default firewalld tidak ditemukan."
+            fi
+        fi
+        [[ $zone =~ ^[A-Za-z0-9_.-]+$ ]] || die "Zona firewalld tidak valid: $zone."
+        for scope in runtime permanent; do firewall_desired+=("$scope|$zone|$family|$cidr"); done
+        info "Firewalld: TCP 10050 dari $cidr pada zona $zone."
+    done <<< "$addresses"
+}
+
+apply_passive_firewall() {
+    local entry status
+    if ((!firewall_enabled)); then return 0; fi
+    for entry in "${firewall_desired[@]}"; do
+        if firewall_rule query "$entry" >/dev/null; then
+            if [[ " ${firewall_existing[*]} " == *" $entry "* ]]; then firewall_managed+=("$entry"); fi
+        else
+            status=$?
+            ((status == 1)) || die "Gagal memeriksa aturan firewalld: $entry."
+            firewall_rule add "$entry" >/dev/null || die "Gagal menambahkan aturan firewalld: $entry."
+            firewall_added+=("$entry")
+            firewall_managed+=("$entry")
+        fi
+    done
+    for entry in "${firewall_existing[@]}"; do
+        if [[ " ${firewall_desired[*]} " == *" $entry "* ]]; then continue; fi
+        if firewall_rule query "$entry" >/dev/null; then
+            firewall_rule remove "$entry" >/dev/null || die "Gagal menghapus aturan firewalld lama: $entry."
+            firewall_removed+=("$entry")
+        else
+            status=$?
+            ((status == 1)) || die "Gagal memeriksa aturan firewalld lama: $entry."
+        fi
+    done
+    if ((${#firewall_managed[@]})) || [[ -f $firewall_state ]]; then
+        for entry in "${firewall_managed[@]}"; do printf '%s\n' "$entry"; done > "$work_dir/firewalld.rules"
+        put_file "$work_dir/firewalld.rules" "$firewall_state" root 0600 ''
+    fi
+}
+
+prepare_passive_firewall
 
 check_existing_config() {
     local file=$1 package=$2
@@ -802,6 +917,8 @@ for service in "${services[@]}"; do
     systemctl is-active --quiet "$service" || report_service_failure "$service"
 done
 
+apply_passive_firewall
+
 # Tulis pengaturan setelah konfigurasi valid dan kedua layanan terverifikasi aktif.
 settings=(
     --hostname "$agent_hostname"
@@ -810,6 +927,7 @@ settings=(
 )
 for plugin in "${zabbix_plugins[@]}"; do settings+=(--zabbix-plugin "$plugin"); done
 if ((passive)); then settings+=(--passive); fi
+if [[ $firewall_zone != auto ]]; then settings+=(--firewall-zone "$firewall_zone"); fi
 if ((docker_monitoring)); then settings+=(--docker-monitoring); fi
 if ((!metrics)); then settings+=(--logs-only); fi
 if [[ -n $psk_source ]]; then settings+=(--psk-identity "$psk_identity" --psk-file "$psk_dest"); fi

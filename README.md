@@ -46,6 +46,14 @@ Jalankan kembali Script dengan cara yang sama. Pengaturan dari deployment sebelu
 
 Untuk integrasi otomasi, opsi CLI masih tersedia melalui `bash install-agents-rocky10.sh --help`.
 
+## Firewall passive checks
+
+Saat passive checks aktif, installer Rocky Linux menambahkan rich rule firewalld untuk TCP **10050** hanya dari IP Zabbix Server atau Proxy yang dikonfigurasi. Aturan ditulis ke runtime dan permanen tanpa reload. Installer memilih zona dari interface rute ke server. Untuk host dengan routing asimetris atau zona berbasis alamat sumber, tentukan zona yang menerima koneksi pada langkah 1 atau gunakan `--firewall-zone public` dengan nama zona yang sesuai.
+
+Firewalld harus sudah berjalan untuk menerapkan aturan. Jika firewall host dikelola dengan alat lain, izinkan TCP 10050 dari IP Zabbix Server atau Proxy di alat tersebut. Bila alamat server disetel sebagai nama DNS, jalankan ulang installer setelah alamat DNS berubah. Anda dapat memeriksa aturan efektif dengan `firewall-cmd --zone=public --list-rich-rules` setelah mengganti `public` jika zonanya berbeda.
+
+Saat passive checks dinonaktifkan atau IP tujuan berubah, installer menghapus aturan lama yang dibuatnya. Aturan administrator yang sudah ada di luar installer tetap mengikuti konfigurasi firewalld yang berlaku.
+
 ## Plugin Zabbix Agent 2
 
 Pada langkah 4, pilih **tambah** lalu masukkan nama seperti `postgresql mongodb`. Paket harus tersedia untuk seri dan platform yang digunakan. Script menambahkan file konfigurasi paket ke `Include`. Pilihan **berhenti memuat** mengeluarkan plugin dari konfigurasi Agent 2 dan paketnya tetap terpasang. Sesuaikan template Zabbix, macro, dan akses database untuk plugin yang dipilih. [Daftar plugin Zabbix](https://www.zabbix.com/documentation/current/en/manual/concepts/agent2/loadable_plugins)
