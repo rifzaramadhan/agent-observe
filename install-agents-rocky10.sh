@@ -620,6 +620,7 @@ YAML
       mountpoints:
         excludes:
           - "/run/user/*/gvfs"
+          - "/run/media/*/*"
 YAML
         inputs+=', host_metrics'
     fi
