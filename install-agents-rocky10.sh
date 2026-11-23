@@ -709,22 +709,39 @@ put_file "$work_dir/vector.conf" "$vector_dropin" root 0644 "${services[1]}"
 runuser -u zabbix -- zabbix_agent2 -T -c "$zbx_config"
 runuser -u vector -- vector validate --no-environment "$vector_config"
 
+report_service_failure() {
+    local service=$1
+    systemctl status "$service" --no-pager --full >&2 || :
+    journalctl -u "$service" --since "@$service_start_at" -n 30 --no-pager >&2 || :
+    die "Layanan gagal berjalan: $service."
+}
+
 changing_services=1
+info "Memuat ulang unit systemd."
 systemctl daemon-reload
+service_start_at=$(date +%s)
 for service in "${services[@]}"; do
-    systemctl enable "$service"
-    if [[ ${restart_needed[$service]:-0} == 1 && ${previous_active[$service]} == active ]]; then
-        systemctl restart "$service"
+    info "Mengaktifkan $service saat boot."
+    systemctl enable "$service" || report_service_failure "$service"
+    if systemctl is-active --quiet "$service"; then
+        if [[ ${restart_needed[$service]:-0} != 1 ]]; then
+            info "$service sudah aktif dan konfigurasinya sama."
+            continue
+        fi
+        info "Memulai ulang $service."
+        if [[ $service == vector.service ]]; then
+            info "Menunggu Vector menyelesaikan graceful shutdown sebelum memakai konfigurasi baru."
+        fi
+        systemctl restart "$service" || report_service_failure "$service"
     else
-        systemctl start "$service"
+        info "Memulai $service."
+        systemctl reset-failed "$service" >/dev/null 2>&1 || :
+        systemctl start "$service" || report_service_failure "$service"
     fi
 done
 sleep 2
 for service in "${services[@]}"; do
-    if ! systemctl is-active --quiet "$service"; then
-        journalctl -u "$service" -n 20 --no-pager >&2 || :
-        die "Layanan gagal berjalan: $service."
-    fi
+    systemctl is-active --quiet "$service" || report_service_failure "$service"
 done
 
 # Tulis pengaturan setelah konfigurasi valid dan kedua layanan terverifikasi aktif.
