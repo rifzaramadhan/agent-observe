@@ -1,24 +1,37 @@
 # Agent Observe
 
-Instalasi Zabbix Agent 2 dan Vector Agent untuk **Rocky Linux 10 x86_64**. Script memasang paket RPM yang belum tersedia, menyiapkan konfigurasi, memvalidasinya, lalu mengaktifkan layanan melalui systemd.
+Instalasi Zabbix Agent 2 dan Vector Agent untuk **Rocky Linux 10, 9, dan 8 serta CentOS 8 dan 7 (x86_64)**. Script memasang paket RPM yang belum tersedia, menyiapkan konfigurasi, memvalidasinya, lalu mengaktifkan layanan melalui systemd.
 
 Untuk node **Proxmox VE**, gunakan [installer Proxmox VE](./install-agents-proxmox.sh) dan [panduan langkah demi langkah](./docs/proxmox.md). Vector pada node Proxmox mengirim log langsung ke aggregator.
 
 ## Prasyarat
 
-- Jalankan di server Rocky Linux 10 x86_64 yang akan dipantau. Siapkan akses `sudo` atau root dan pastikan systemd berjalan.
-- Untuk instalasi paket, server memerlukan `curl` dan akses HTTPS ke repositori paket. Jika kedua paket sudah terpasang, Script melewati pengecekan internet dan langsung melanjutkan konfigurasi.
+- Jalankan di server Linux x86_64 yang akan dipantau dengan Script yang cocok untuk distribusi dan versinya. Siapkan akses `sudo` atau root dan pastikan systemd berjalan.
+- Untuk instalasi paket, server memerlukan `curl` dan akses HTTPS ke repositori paket. Jika semua komponen yang diminta sudah terpasang, Script melewati pengecekan internet dan langsung melanjutkan konfigurasi.
 - Pastikan Zabbix Server atau Proxy menerima **active checks** dan Vector Aggregator memiliki listener **Vector native** yang bisa dijangkau dari server agen.
 
 ## Instalasi dan konfigurasi interaktif
 
-Jalankan di server Rocky Linux yang akan dipantau. Jika Anda sudah mengunduh Script, buka direktori unduhan lalu jalankan perintah `sudo bash` di bawah.
+Clone repository atau ekstrak arsip ZIP GitHub pada server yang akan dipantau.
 
 ```bash
 git clone https://github.com/rifzaramadhan/agent-observe.git
 cd agent-observe
-sudo bash install-agents-rocky10.sh
 ```
+
+Jalankan perintah yang sesuai dengan OS Anda.
+
+| OS | Perintah | Instalasi Vector |
+| --- | --- | --- |
+| Rocky Linux 10 | `sudo bash install-agents-rocky10.sh` | RPM |
+| Rocky Linux 9 | `sudo bash install-agents-rocky9.sh` | RPM |
+| Rocky Linux 8 | `sudo bash install-agents-rocky8.sh` | RPM |
+| CentOS Linux 8 atau CentOS Stream 8 | `sudo bash install-agents-centos8.sh` | RPM |
+| CentOS Linux 7 | `sudo bash install-agents-centos7.sh` | Arsip resmi Vector 0.62.0 x86_64 musl pada instalasi baru |
+
+Untuk Rocky Linux 8/9 dan CentOS 7/8, simpan direktori `lib/` bersama file installer. Semua Script menawarkan Zabbix Agent 2 seri 8.0 (default) atau 7.0 dan memakai repositori Zabbix sesuai distribusi. Daftar plugin mengikuti paket yang diterbitkan untuk masing-masing seri dan OS.
+
+CentOS Linux 7 dan 8 serta CentOS Stream 8 telah mencapai akhir dukungan. Saat paket diperlukan, installer CentOS menggunakan arsip resmi [CentOS Vault](https://vault.centos.org/) untuk dependensi OS selama transaksi tersebut. Konfigurasi repo Vault dibuat sementara dengan pemeriksaan tanda tangan RPM aktif. Khusus CentOS 7, instalasi Vector baru menggunakan binary statis musl resmi dari [dokumentasi Vector](https://vector.dev/docs/setup/installation/manual/from-archives/) dengan unit `vector.service`. Versinya dipatok di Script. Jika Vector RPM sudah ada dan binarinya dapat berjalan, installer memakai instalasi tersebut.
 
 Di setiap langkah, pilih **`u`** untuk mengubah, atau tekan **Enter** maupun **`s`** untuk melewati. Langkah yang dilewati memakai pengaturan tersimpan atau default. Saat memasukkan nilai, tekan Enter untuk memakai nilai yang ditampilkan.
 
@@ -26,7 +39,7 @@ Di setiap langkah, pilih **`u`** untuk mengubah, atau tekan **Enter** maupun **`
 | --- | --- |
 | 1. Zabbix Agent 2 | Server atau Proxy, port active checks, nama host, seri paket 8.0 atau 7.0, dan passive checks |
 | 2. Vector Agent | Aggregator, port Vector native, dan pengiriman metrik host |
-| 3. File log aplikasi | Preset Nginx atau Apache, path khusus, ACL baca Vector, dan grup akses |
+| 3. File log aplikasi dan Docker | Preset Nginx, Apache, dan Docker, path khusus, ACL baca Vector, serta grup akses |
 | 4. Plugin Zabbix Agent 2 | Tambah, ganti, atau berhenti memuat plugin |
 | 5. TLS | Identitas dan file PSK Zabbix, serta TLS Vector dengan CA sistem atau file CA |
 | 6. Konfigurasi milik deployment lain | Izin mengganti konfigurasi yang dikelola di luar Script |
@@ -44,11 +57,11 @@ Koneksi default menggunakan plaintext. Untuk TLS, atur identitas dan kunci PSK y
 
 Jalankan kembali Script dengan cara yang sama. Pengaturan dari deployment sebelumnya dimuat dari `/etc/agent-observe.args`. Ubah langkah yang diperlukan lalu lewati langkah lainnya. Jika instalasi lama belum memiliki pengaturan tersimpan, isi pengaturan deployment yang berlaku saat pertama kali menjalankan panduan.
 
-Untuk integrasi otomasi, opsi CLI masih tersedia melalui `bash install-agents-rocky10.sh --help`.
+Untuk integrasi otomasi, gunakan `--help` pada Script yang sesuai dengan OS.
 
 ## Firewall passive checks
 
-Saat passive checks aktif, installer Rocky Linux menambahkan rich rule firewalld untuk TCP **10050** hanya dari IP Zabbix Server atau Proxy yang dikonfigurasi. Aturan ditulis ke runtime dan permanen tanpa reload. Installer memilih zona dari interface rute ke server. Untuk host dengan routing asimetris atau zona berbasis alamat sumber, tentukan zona yang menerima koneksi pada langkah 1 atau gunakan `--firewall-zone public` dengan nama zona yang sesuai.
+Saat passive checks aktif, installer Rocky Linux dan CentOS menambahkan rich rule firewalld untuk TCP **10050** hanya dari IP Zabbix Server atau Proxy yang dikonfigurasi. Aturan ditulis ke runtime dan permanen tanpa reload. Installer memilih zona dari interface rute ke server. Untuk host dengan routing asimetris atau zona berbasis alamat sumber, tentukan zona yang menerima koneksi pada langkah 1 atau gunakan `--firewall-zone public` dengan nama zona yang sesuai.
 
 Firewalld harus sudah berjalan untuk menerapkan aturan. Jika firewall host dikelola dengan alat lain, izinkan TCP 10050 dari IP Zabbix Server atau Proxy di alat tersebut. Bila alamat server disetel sebagai nama DNS, jalankan ulang installer setelah alamat DNS berubah. Anda dapat memeriksa aturan efektif dengan `firewall-cmd --zone=public --list-rich-rules` setelah mengganti `public` jika zonanya berbeda.
 
@@ -68,13 +81,13 @@ Vector membaca journal secara default. Pilih preset di langkah 3 untuk file log 
 | `apache` | `/var/log/httpd/access_log`, `/var/log/httpd/error_log` |
 | Log khusus | Masukkan `my_app=/var/log/my-app/*.log` ketika diminta. Ulangi untuk menambah file lain. |
 
-Di Rocky Linux, pilih **ubah** pada langkah 3 lalu aktifkan **ACL baca untuk akun vector pada file log pilihan**. Script menginstal paket `acl` bila diperlukan, memberi akun `vector` akses lintas direktori dan izin baca file, lalu menguji file yang dapat dijangkau. Untuk pola seperti `/var/log/nginx/*.log`, Script juga memberi izin membaca daftar isi direktori. ACL mendukung wildcard pada nama file dan melewati symlink. Grup akses log masih bisa dipakai melalui langkah 3.
+Di Rocky Linux dan CentOS, pilih **ubah** pada langkah 3 lalu aktifkan **ACL baca untuk akun vector pada file log pilihan**. Script menginstal paket `acl` bila diperlukan, memberi akun `vector` akses lintas direktori dan izin baca file, lalu menguji file yang dapat dijangkau. Untuk pola seperti `/var/log/nginx/*.log`, Script juga memberi izin membaca daftar isi direktori. ACL mendukung wildcard pada nama file dan melewati symlink. Grup akses log masih bisa dipakai melalui langkah 3.
 
 ACL ini diterapkan pada file yang tersedia saat Script berjalan. Setelah logrotate membuat file baru, jalankan kembali Script atau atur akses file baru melalui grup yang sesuai pada konfigurasi logrotate. Menonaktifkan opsi ACL menghentikan penerapan selanjutnya. Entri yang sudah ditulis tetap ada sampai dihapus oleh administrator. Vector membaca file yang baru ditemukan dari awal dan melanjutkan file yang telah memiliki checkpoint dari posisi terakhir.
 
 ## Preset Docker
 
-Pada host Rocky Linux yang menjalankan Docker Engine, pilih **ubah** di langkah 3 dan aktifkan **Preset Docker (metrik dan log)**. Dari CLI, gunakan `--configure-only --docker-monitoring` pada host yang pengaturannya sudah tersimpan, atau `--docker-monitoring` bersama opsi deployment awal.
+Pada host Rocky Linux atau CentOS yang menjalankan Docker Engine, pilih **ubah** di langkah 3 dan aktifkan **Preset Docker (metrik dan log)**. Dari CLI, gunakan `--configure-only --docker-monitoring` pada host yang pengaturannya sudah tersimpan, atau `--docker-monitoring` bersama opsi deployment awal.
 
 | Komponen | Data |
 | --- | --- |
